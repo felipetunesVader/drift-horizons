@@ -1,353 +1,575 @@
-// Usar o Three.js global
-const THREE = window.THREE;
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-// Configuração inicial
-let scene, camera, renderer, player, ocean;
-
-// Sistema de controle
-const keys = { w: false, a: false, s: false, d: false };
-
-// Adicionar estas variáveis no início do arquivo
-let islands = [];
-let collectibles = 0;
-let score = 0;
-
-// Adicionar após as variáveis iniciais
+// Variáveis globais
+let scene, camera, renderer, controls;
+let ocean, skybox;
+let kayak, paddleLeft, paddleRight;
 let clock = new THREE.Clock();
-let shark = null;
-let aurora = null;
-let isNight = false;
+let velocity = new THREE.Vector3();
+let waveUniforms = { uTime: { value: 0 } };
+let isAudioPlaying = false;
+let terrain = [];
 let textureLoader = new THREE.TextureLoader();
+let worldSize = 200;
+let chunkSize = 50;
+let chunksVisible = 5;
+let worldSeed = Math.random() * 10000;
+let cubeMapUrls = [
+    'https://threejs.org/examples/textures/cube/skybox/px.jpg', // right
+    'https://threejs.org/examples/textures/cube/skybox/nx.jpg', // left
+    'https://threejs.org/examples/textures/cube/skybox/py.jpg', // top
+    'https://threejs.org/examples/textures/cube/skybox/ny.jpg', // bottom
+    'https://threejs.org/examples/textures/cube/skybox/pz.jpg', // front
+    'https://threejs.org/examples/textures/cube/skybox/nz.jpg'  // back
+];
 
-// Carregar texturas
-const textures = {
-    water: textureLoader.load('https://threejs.org/examples/textures/waternormals.jpg'),
-    island: textureLoader.load('https://threejs.org/examples/textures/terrain/grasslight-big.jpg'),
-    wood: textureLoader.load('https://threejs.org/examples/textures/hardwood2_diffuse.jpg')
+// Controles do jogador
+const keys = { w: false, a: false, s: false, d: false, shift: false };
+const params = {
+    acceleration: 0.0005,
+    damping: 0.98,
+    turnSpeed: 0.02,
+    maxSpeed: 0.05,
+    waveHeight: 0.2,
+    waveFrequency: 2.0,
+    waveSpeed: 2.0,
+    fogDensity: 0.02
 };
 
-// Configurar texturas
-textures.water.wrapS = textures.water.wrapT = THREE.RepeatWrapping;
-textures.water.repeat.set(10, 10);
-textures.island.wrapS = textures.island.wrapT = THREE.RepeatWrapping;
-textures.island.repeat.set(3, 3);
-textures.wood.wrapS = textures.wood.wrapT = THREE.RepeatWrapping;
-textures.wood.repeat.set(1, 1);
-
-// Iniciar diretamente sem carregar scripts adicionais
+// Inicialização
 init();
 
 function init() {
-    console.log("Iniciando...");
-    
-    // Configuração da cena
+    // Criar cena
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x87CEEB); // Céu azul simples
+    scene.background = new THREE.Color(0x001e3c);
     
+    // Adicionar neblina
+    scene.fog = new THREE.FogExp2(0x001e3c, params.fogDensity);
+    
+    // Configurar câmera
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 5, 10);
     
-    renderer = new THREE.WebGLRenderer({ antialias: true });
+    // Configurar renderizador com melhorias
+    renderer = new THREE.WebGLRenderer({ 
+        antialias: true,
+        logarithmicDepthBuffer: true,
+        precision: 'highp'
+    });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     document.body.appendChild(renderer.domElement);
     
-    // Iluminação
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    // Adicionar controles para depuração
+    controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.enablePan = false;
+    
+    // Luzes com melhorias
+    const ambientLight = new THREE.AmbientLight(0x404040);
     scene.add(ambientLight);
     
     const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
-    directionalLight.position.set(100, 100, 50);
+    directionalLight.position.set(50, 50, -20);
+    directionalLight.castShadow = true;
+    directionalLight.shadow.mapSize.width = 2048;
+    directionalLight.shadow.mapSize.height = 2048;
+    directionalLight.shadow.camera.near = 0.5;
+    directionalLight.shadow.camera.far = 500;
+    directionalLight.shadow.camera.left = -100;
+    directionalLight.shadow.camera.right = 100;
+    directionalLight.shadow.camera.top = 100;
+    directionalLight.shadow.camera.bottom = -100;
     scene.add(directionalLight);
     
-    // Criar elementos básicos
-    ocean = createOcean();
-    createPlayer();
-    createIslands();
-    createScoreDisplay();
+    // Carregar texturas e recursos
+    const textures = loadTextures();
     
-    // Adicionar céu, sol e lua
-    sky = createSky();
-    sun = createSun();
-    moon = createMoon();
+    // Criar elementos do jogo com as novas texturas
+    createSkybox();
+    createOcean(textures);
+    createKayak();
     
-    // Configurar controles
-    document.addEventListener('keydown', (e) => keys[e.key.toLowerCase()] = true);
-    document.addEventListener('keyup', (e) => keys[e.key.toLowerCase()] = false);
+    // Gerar mundo procedural
+    generateProceduralWorld(textures);
     
-    // Posição inicial da câmera
-    camera.position.set(0, 5, 10);
-    camera.lookAt(0, 0, 0);
+    // Capturar entrada do teclado
+    setupKeyboardControls();
     
-    // Iniciar ciclo dia/noite
-    updateDayNightCycle();
+    // Redimensionar
+    window.addEventListener('resize', onWindowResize);
     
-    console.log("Iniciando animação...");
-    // Iniciar loop de animação
+    // Esconder a tela de carregamento manualmente
+    document.getElementById('loading').style.display = 'none';
+    
+    // Iniciar animação
     animate();
 }
 
-function createOcean() {
-    const geometry = new THREE.PlaneGeometry(1000, 1000, 100, 100);
+function createSkybox() {
+    // Criar uma esfera grande para o skybox com gradiente
+    const geometry = new THREE.SphereGeometry(500, 32, 32);
+    geometry.scale(-1, 1, 1); // Virar a esfera ao contrário
     
-    // Carregar texturas alternativas que existem
-    const normalMap = textureLoader.load('https://threejs.org/examples/textures/water/Water_1_M_Normal.jpg');
-    // Usar texturas alternativas para as que não foram encontradas
-    const dudvMap = textureLoader.load('https://threejs.org/examples/textures/waternormals.jpg');
-    const foamTexture = textureLoader.load('https://threejs.org/examples/textures/terrain/grasslight-big.jpg');
+    // Shader para criar um gradiente de céu
+    const vertexShader = `
+        varying vec3 vWorldPosition;
+        
+        void main() {
+            vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+            vWorldPosition = worldPosition.xyz;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+    `;
     
-    normalMap.wrapS = normalMap.wrapT = THREE.RepeatWrapping;
-    dudvMap.wrapS = dudvMap.wrapT = THREE.RepeatWrapping;
-    foamTexture.wrapS = foamTexture.wrapT = THREE.RepeatWrapping;
+    const fragmentShader = `
+        uniform vec3 topColor;
+        uniform vec3 bottomColor;
+        
+        varying vec3 vWorldPosition;
+        
+        void main() {
+            float h = normalize(vWorldPosition).y;
+            float t = max(0.0, min(1.0, (h + 1.0) / 2.0));
+            gl_FragColor = vec4(mix(bottomColor, topColor, t), 1.0);
+        }
+    `;
     
-    // Criar shader personalizado para água realista
+    const uniforms = {
+        topColor: { value: new THREE.Color(0x001133) },
+        bottomColor: { value: new THREE.Color(0x001e3c) }
+    };
+    
     const material = new THREE.ShaderMaterial({
-        uniforms: {
-            time: { value: 0 },
-            normalMap: { value: normalMap },
-            dudvMap: { value: dudvMap },
-            foamTexture: { value: foamTexture },
-            waterColor: { value: new THREE.Color(0x004080) },
-            deepWaterColor: { value: new THREE.Color(0x001030) },
-            sunDirection: { value: new THREE.Vector3(0.5, 0.5, 0) },
-            sunColor: { value: new THREE.Color(1.0, 1.0, 0.8) },
-            cameraPosCustom: { value: new THREE.Vector3() }
+        uniforms: uniforms,
+        vertexShader: vertexShader,
+        fragmentShader: fragmentShader,
+        side: THREE.BackSide
+    });
+    
+    skybox = new THREE.Mesh(geometry, material);
+    scene.add(skybox);
+}
+
+function createOcean(textures) {
+    // Criar geometria do oceano (maior para mundo procedural)
+    const geometry = new THREE.PlaneGeometry(worldSize, worldSize, 200, 200);
+    
+    // Shader mais avançado para animação das ondas com reflexos
+    const vertexShader = `
+        uniform float uTime;
+        varying vec2 vUv;
+        varying vec3 vPosition;
+        varying vec3 vNormal;
+        varying vec3 vWorldPosition;
+        varying vec3 vViewDirection;
+        varying float vDepth;
+        
+        void main() {
+            vUv = uv;
+            vPosition = position;
+            vNormal = normalize(normal);
+            
+            float waveHeight = 0.2;
+            float waveSpeed = 1.5;
+            float frequency = 2.0;
+            
+            // Ondas principais
+            float wave1 = sin(position.x * frequency + uTime * waveSpeed) * waveHeight;
+            float wave2 = cos(position.y * frequency + uTime * waveSpeed * 0.8) * waveHeight;
+            
+            // Ondas secundárias para mais detalhes
+            float wave3 = sin(position.x * frequency * 2.0 + uTime * waveSpeed * 1.3) * waveHeight * 0.3;
+            float wave4 = cos(position.y * frequency * 2.5 + uTime * waveSpeed) * waveHeight * 0.2;
+            
+            // Ondas terciárias para detalhes finos
+            float wave5 = sin(position.x * frequency * 5.0 + uTime * waveSpeed * 0.7) * waveHeight * 0.1;
+            float wave6 = cos(position.y * frequency * 4.0 + uTime * waveSpeed * 1.1) * waveHeight * 0.15;
+            
+            // Combinar ondas
+            float totalWave = wave1 + wave2 + wave3 + wave4 + wave5 + wave6;
+            
+            // Aplicar deslocamento
+            vec3 newPosition = position;
+            newPosition.z += totalWave;
+            
+            // Calcular posição no espaço de mundo
+            vec4 worldPosition = modelMatrix * vec4(newPosition, 1.0);
+            vWorldPosition = worldPosition.xyz;
+            
+            // Calcular direção de visualização
+            vViewDirection = normalize(cameraPosition - worldPosition.xyz);
+            
+            // Calcular profundidade para transparência
+            vDepth = clamp(length(worldPosition.xyz - cameraPosition) / 100.0, 0.0, 1.0);
+            
+            gl_Position = projectionMatrix * viewMatrix * worldPosition;
+        }
+    `;
+    
+    const fragmentShader = `
+        uniform float uTime;
+        uniform samplerCube envMap;
+        uniform sampler2D normalMap;
+        uniform sampler2D detailMap;
+        uniform sampler2D causticsMap;
+        uniform vec3 sunColor;
+        uniform vec3 sunDirection;
+        uniform vec3 waterColor;
+        uniform vec3 deepWaterColor;
+        uniform vec3 skyColor;
+        
+        varying vec2 vUv;
+        varying vec3 vPosition;
+        varying vec3 vNormal;
+        varying vec3 vWorldPosition;
+        varying vec3 vViewDirection;
+        varying float vDepth;
+        
+        // Funções auxiliares
+        float fresnel(vec3 viewDirection, vec3 normal) {
+            return pow(1.0 - max(0.0, dot(viewDirection, normal)), 4.0);
+        }
+        
+        void main() {
+            // Shift UVs com base no tempo para efeito de movimento
+            vec2 uvTimeShift1 = vUv + vec2(-0.02, 0.03) * uTime * 0.2;
+            vec2 uvTimeShift2 = vUv + vec2(0.04, -0.01) * uTime * 0.3;
+            
+            // Aplicar normal maps para detalhes
+            vec3 normalFromMap1 = texture2D(normalMap, uvTimeShift1).rgb * 2.0 - 1.0;
+            vec3 normalFromMap2 = texture2D(detailMap, uvTimeShift2).rgb * 2.0 - 1.0;
+            
+            // Combinar normal maps com diferentes intensidades
+            vec3 combinedNormal = normalize(normalFromMap1 * 0.5 + normalFromMap2 * 0.3);
+            
+            // Combinar com a normal base da geometria
+            vec3 normal = normalize(vNormal + combinedNormal * 0.4);
+            
+            // Efeito Fresnel - aumenta reflexões em ângulos rasos
+            float fresnelTerm = fresnel(vViewDirection, normal);
+            
+            // Calcular direção de reflexão
+            vec3 reflectedDir = reflect(-vViewDirection, normal);
+            
+            // Amostra do mapa de ambiente para reflexões
+            vec3 reflectedColor = textureCube(envMap, reflectedDir).rgb;
+            
+            // Ajustar cor de profundidade
+            vec3 baseWaterColor = mix(waterColor, deepWaterColor, vDepth);
+            
+            // Efeito caustics (padrões de luz subaquática)
+            vec2 causticsUV = vWorldPosition.xz * 0.05 + uTime * 0.05;
+            vec3 caustics = texture2D(causticsMap, causticsUV).rgb * 0.3;
+            
+            // Aplicar caustics apenas em áreas mais rasas
+            caustics *= (1.0 - vDepth) * 0.5;
+            
+            // Especular do sol
+            float sunSpec = pow(max(0.0, dot(reflectedDir, normalize(sunDirection))), 256.0) * 0.8;
+            vec3 sunSpecular = sunColor * sunSpec;
+            
+            // Combinar cores finais
+            vec3 finalColor = mix(baseWaterColor, reflectedColor, fresnelTerm * 0.7);
+            
+            // Adicionar efeitos extra
+            finalColor += sunSpecular;
+            finalColor += caustics;
+            
+            // Ajustar saturação baseada na profundidade
+            finalColor = mix(finalColor, vec3(length(finalColor) * 0.33), vDepth * 0.2);
+            
+            // Transparência variável baseada na profundidade
+            float alpha = mix(0.7, 0.95, vDepth);
+            
+            gl_FragColor = vec4(finalColor, alpha);
+        }
+    `;
+    
+    const material = new THREE.ShaderMaterial({
+        uniforms: { 
+            uTime: { value: 0.0 },
+            envMap: { value: textures.envMap },
+            normalMap: { value: textures.waterNormal },
+            detailMap: { value: textures.waterDetail },
+            causticsMap: { value: textures.caustics },
+            sunColor: { value: new THREE.Color(1.0, 0.95, 0.8) },
+            sunDirection: { value: new THREE.Vector3(0.5, 0.7, 0.5).normalize() },
+            waterColor: { value: new THREE.Color(0.0, 0.35, 0.5) },
+            deepWaterColor: { value: new THREE.Color(0.0, 0.15, 0.35) },
+            skyColor: { value: new THREE.Color(0.0, 0.1, 0.3) }
         },
-        vertexShader: `
-            uniform float time;
-            varying vec2 vUv;
-            varying vec3 vPosition;
-            varying vec3 vNormal;
-            varying vec3 vWorldPosition;
-            varying vec4 vProjectedPosition;
-            
-            void main() {
-                vUv = uv;
-                vPosition = position;
-                vNormal = normal;
-                
-                // Criar ondas mais suaves e menos agitadas
-                float wave1 = sin(position.x * 0.01 + time * 0.2) * 
-                             cos(position.z * 0.01 + time * 0.15) * 0.5;
-                float wave2 = sin(position.x * 0.02 + time * 0.15) * 0.3;
-                float wave3 = cos(position.z * 0.02 + time * 0.2) * 0.3;
-                float wave4 = sin(position.x * 0.05 + position.z * 0.05 + time * 0.25) * 0.15;
-                
-                vec3 pos = position;
-                pos.y += wave1 + wave2 + wave3 + wave4;
-                
-                // Calcular normal baseada nas ondas
-                vec3 tangent = normalize(vec3(1.0, 
-                    cos(position.x * 0.01 + time * 0.2) * 0.01 +
-                    cos(position.x * 0.02 + time * 0.15) * 0.012 +
-                    sin(position.x * 0.05 + position.z * 0.05 + time * 0.25) * 0.015,
-                    0.0));
-                vec3 bitangent = normalize(vec3(0.0, 
-                    sin(position.z * 0.01 + time * 0.15) * 0.01 +
-                    sin(position.z * 0.02 + time * 0.2) * 0.012 +
-                    cos(position.x * 0.05 + position.z * 0.05 + time * 0.25) * 0.015,
-                    1.0));
-                vNormal = normalize(cross(tangent, bitangent));
-                
-                vWorldPosition = (modelMatrix * vec4(pos, 1.0)).xyz;
-                vProjectedPosition = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
-                gl_Position = vProjectedPosition;
-            }
-        `,
-        fragmentShader: `
-            uniform vec3 waterColor;
-            uniform vec3 deepWaterColor;
-            uniform sampler2D normalMap;
-            uniform sampler2D dudvMap;
-            uniform sampler2D foamTexture;
-            uniform float time;
-            uniform vec3 sunDirection;
-            uniform vec3 sunColor;
-            uniform vec3 cameraPosCustom;
-            
-            varying vec2 vUv;
-            varying vec3 vPosition;
-            varying vec3 vNormal;
-            varying vec3 vWorldPosition;
-            varying vec4 vProjectedPosition;
-            
-            const float shininess = 100.0;
-            const float fresnelPower = 2.0;
-            
-            void main() {
-                // Movimento da textura mais suave
-                vec2 distortedUv = vUv * 8.0;
-                vec2 distortion1 = (texture2D(dudvMap, vec2(distortedUv.x + time * 0.02, distortedUv.y + time * 0.02)).rg * 2.0 - 1.0) * 0.01;
-                vec2 distortion2 = (texture2D(dudvMap, vec2(-distortedUv.x + time * 0.03, distortedUv.y + time * 0.01)).rg * 2.0 - 1.0) * 0.01;
-                
-                vec2 totalDistortion = distortion1 + distortion2;
-                
-                // Normal map com distorção
-                vec2 normalUv = vUv * 4.0 + totalDistortion;
-                vec3 normal = texture2D(normalMap, normalUv).rgb * 2.0 - 1.0;
-                normal = normalize(normal);
-                
-                // Direção da luz refletida
-                vec3 viewDirection = normalize(cameraPosCustom - vWorldPosition);
-                vec3 lightReflectDirection = reflect(-sunDirection, normal);
-                
-                // Especular
-                float specular = pow(max(dot(viewDirection, lightReflectDirection), 0.0), shininess);
-                
-                // Fresnel (reflexão mais forte em ângulos rasos)
-                float fresnel = pow(1.0 - max(dot(viewDirection, normal), 0.0), fresnelPower);
-                
-                // Profundidade simulada
-                float depth = clamp(vPosition.y * 0.5 + 0.5, 0.0, 1.0);
-                
-                // Caustics (efeito de luz subaquática) mais sutil
-                float caustics = texture2D(dudvMap, vUv * 5.0 + time * 0.02).r * 0.5 + 0.5;
-                caustics *= texture2D(dudvMap, vUv * 4.0 - time * 0.02).g * 0.5 + 0.5;
-                caustics = pow(caustics, 2.0) * 1.5;
-                
-                // Espuma nas cristas das ondas (menos proeminente)
-                float foam = texture2D(foamTexture, vUv * 6.0 + totalDistortion + vec2(time * 0.02, time * 0.01)).r;
-                float waveHeight = clamp(vPosition.y * 2.0, 0.0, 1.0);
-                foam *= smoothstep(0.7, 1.0, waveHeight) * 0.7; // Menos espuma
-                
-                // Cor final
-                vec3 color = mix(deepWaterColor, waterColor, depth);
-                color += specular * sunColor * 0.4;
-                color = mix(color, vec3(1.0), foam * 0.3); // Espuma menos intensa
-                color = mix(color, vec3(1.0, 1.0, 1.0), fresnel * 0.4);
-                color += caustics * sunColor * 0.05 * (1.0 - depth);
-                
-                // Tornar a água mais opaca
-                gl_FragColor = vec4(color, 0.98); // Aumentar ainda mais a opacidade
-            }
-        `,
+        vertexShader: vertexShader,
+        fragmentShader: fragmentShader,
         transparent: true,
         side: THREE.DoubleSide
     });
     
-    const ocean = new THREE.Mesh(geometry, material);
+    ocean = new THREE.Mesh(geometry, material);
     ocean.rotation.x = -Math.PI / 2;
-    ocean.position.y = 0;
-    
+    ocean.receiveShadow = true;
     scene.add(ocean);
-    console.log("Oceano realista criado com shader avançado");
     
-    return ocean;
+    console.log("Oceano realista criado com reflexos, normal maps e transparência");
 }
 
-function createPlayer() {
-    const geometry = new THREE.BoxGeometry(2, 0.2, 1);
-    const material = new THREE.MeshPhongMaterial({ 
-        map: textures.wood,
-        color: 0x8B4513,
-        shininess: 60
+function createKayak() {
+    // Criar grupo para o caiaque
+    kayak = new THREE.Group();
+    
+    // Corpo do caiaque (mais realista)
+    const bodyGeometry = new THREE.BoxGeometry(0.8, 0.3, 2.5);
+    bodyGeometry.scale(1, 0.5, 1); // Achatado para parecer mais com um caiaque
+    
+    // Material com textura para o caiaque
+    const bodyMaterial = new THREE.MeshStandardMaterial({
+        color: 0xf57c36, // Laranja
+        roughness: 0.6,
+        metalness: 0.1
     });
     
-    player = new THREE.Mesh(geometry, material);
-    player.position.y = 0.5;
-    player.userData.speed = 0.1;
+    const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+    body.position.y = 0.1; // Altura do caiaque acima da água
+    kayak.add(body);
     
-    scene.add(player);
-    console.log("Jogador criado com textura");
+    // Criar o remador (pessoa simples)
+    const paddlerGroup = new THREE.Group();
+    paddlerGroup.position.set(0, 0.3, -0.2);
+    kayak.add(paddlerGroup);
+    
+    // Criar pessoa estilizada
+    // Torso
+    const torsoGeometry = new THREE.BoxGeometry(0.4, 0.4, 0.3);
+    const torsoMaterial = new THREE.MeshStandardMaterial({ color: 0x2c3e50 }); // Cor da roupa
+    const torso = new THREE.Mesh(torsoGeometry, torsoMaterial);
+    torso.position.y = 0.3;
+    paddlerGroup.add(torso);
+    
+    // Cabeça
+    const headGeometry = new THREE.SphereGeometry(0.15, 16, 16);
+    const headMaterial = new THREE.MeshStandardMaterial({ color: 0xe0ac69 }); // Cor da pele
+    const head = new THREE.Mesh(headGeometry, headMaterial);
+    head.position.y = 0.6;
+    paddlerGroup.add(head);
+    
+    // Braços
+    const armGeometry = new THREE.CylinderGeometry(0.05, 0.05, 0.5);
+    const armMaterial = new THREE.MeshStandardMaterial({ color: 0x2c3e50 });
+    
+    const leftArm = new THREE.Mesh(armGeometry, armMaterial);
+    leftArm.rotation.z = Math.PI / 3;
+    leftArm.position.set(-0.3, 0.3, 0);
+    paddlerGroup.add(leftArm);
+    
+    const rightArm = new THREE.Mesh(armGeometry, armMaterial);
+    rightArm.rotation.z = -Math.PI / 3;
+    rightArm.position.set(0.3, 0.3, 0);
+    paddlerGroup.add(rightArm);
+    
+    // Remos
+    const paddleGeometry = new THREE.BoxGeometry(0.1, 0.01, 1.2);
+    const bladeGeometry = new THREE.BoxGeometry(0.2, 0.01, 0.3);
+    const paddleMaterial = new THREE.MeshStandardMaterial({ color: 0x5d4037 }); // Marrom
+    
+    // Remo esquerdo
+    paddleLeft = new THREE.Group();
+    const paddleLeftHandle = new THREE.Mesh(paddleGeometry, paddleMaterial);
+    const paddleLeftBlade = new THREE.Mesh(bladeGeometry, paddleMaterial);
+    paddleLeftBlade.position.z = 0.6;
+    paddleLeft.add(paddleLeftHandle);
+    paddleLeft.add(paddleLeftBlade);
+    paddleLeft.position.set(-0.6, 0.3, 0);
+    paddleLeft.rotation.x = Math.PI / 4;
+    paddlerGroup.add(paddleLeft);
+    
+    // Remo direito
+    paddleRight = new THREE.Group();
+    const paddleRightHandle = new THREE.Mesh(paddleGeometry, paddleMaterial);
+    const paddleRightBlade = new THREE.Mesh(bladeGeometry, paddleMaterial);
+    paddleRightBlade.position.z = 0.6;
+    paddleRight.add(paddleRightHandle);
+    paddleRight.add(paddleRightBlade);
+    paddleRight.position.set(0.6, 0.3, 0);
+    paddleRight.rotation.x = Math.PI / 4;
+    paddlerGroup.add(paddleRight);
+    
+    // Configurações iniciais do caiaque
+    kayak.position.y = 0; // Será ajustado pela altura das ondas
+    scene.add(kayak);
 }
 
-function createIslands() {
-    for (let i = 0; i < 5; i++) {
-        const geometry = new THREE.SphereGeometry(2, 16, 12);
-        
-        // Deformar a geometria para parecer mais natural
-        const positions = geometry.attributes.position;
-        for (let j = 0; j < positions.count; j++) {
-            const vertex = new THREE.Vector3();
-            vertex.fromBufferAttribute(positions, j);
-            
-            // Adicionar ruído à superfície
-            const noise = Math.sin(vertex.x * 2) * Math.cos(vertex.z * 2) * 0.2;
-            vertex.y += noise;
-            
-            positions.setXYZ(j, vertex.x, vertex.y, vertex.z);
+function setupKeyboardControls() {
+    document.addEventListener('keydown', (e) => {
+        if (e.key.toLowerCase() in keys) {
+            keys[e.key.toLowerCase()] = true;
         }
-        
-        geometry.computeVertexNormals();
-        
-        const material = new THREE.MeshStandardMaterial({ 
-            map: textures.island,
-            roughness: 0.8,
-            metalness: 0.1
-        });
-        
-        const island = new THREE.Mesh(geometry, material);
-        
-        island.position.x = Math.random() * 100 - 50;
-        island.position.z = Math.random() * 100 - 50;
-        island.position.y = 0;
-        island.userData.lastCollected = 0;
-        
-        // Adicionar vegetação melhorada
-        addVegetation(island);
-        
-        islands.push(island);
-        scene.add(island);
-        console.log(`Ilha ${i} criada com textura`);
-    }
+        if (e.key === 'Shift') {
+            keys.shift = true;
+        }
+    });
+    
+    document.addEventListener('keyup', (e) => {
+        if (e.key.toLowerCase() in keys) {
+            keys[e.key.toLowerCase()] = false;
+        }
+        if (e.key === 'Shift') {
+            keys.shift = false;
+        }
+    });
 }
 
-function addVegetation(island) {
-    // Adicionar algumas árvores simples
-    for (let i = 0; i < 5; i++) {
-        const treeHeight = Math.random() * 1 + 0.5;
-        const treeGeometry = new THREE.ConeGeometry(0.3, treeHeight, 8);
-        const treeMaterial = new THREE.MeshPhongMaterial({ color: 0x006400 });
-        const tree = new THREE.Mesh(treeGeometry, treeMaterial);
-        
-        // Posicionar árvore aleatoriamente na ilha
-        const angle = Math.random() * Math.PI * 2;
-        const radius = Math.random() * 1.5;
-        tree.position.x = Math.cos(angle) * radius;
-        tree.position.z = Math.sin(angle) * radius;
-        tree.position.y = 2 + treeHeight / 2;
-        
-        island.add(tree);
+function updateKayakMovement() {
+    // Calcular aceleração com base no boost de Shift
+    const currentAcceleration = params.acceleration * (keys.shift ? 2.5 : 1.0);
+    const currentMaxSpeed = params.maxSpeed * (keys.shift ? 1.5 : 1.0);
+    
+    // Controle direcional
+    if (keys.w) {
+        velocity.z -= Math.cos(kayak.rotation.y) * currentAcceleration;
+        velocity.x -= Math.sin(kayak.rotation.y) * currentAcceleration;
     }
+    if (keys.s) {
+        velocity.z += Math.cos(kayak.rotation.y) * currentAcceleration * 0.5; // Mover para trás é mais lento
+        velocity.x += Math.sin(kayak.rotation.y) * currentAcceleration * 0.5;
+    }
+    if (keys.a) {
+        kayak.rotation.y += params.turnSpeed;
+    }
+    if (keys.d) {
+        kayak.rotation.y -= params.turnSpeed;
+    }
+    
+    // Limitar velocidade máxima
+    const speed = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
+    if (speed > currentMaxSpeed) {
+        velocity.x = (velocity.x / speed) * currentMaxSpeed;
+        velocity.z = (velocity.z / speed) * currentMaxSpeed;
+    }
+    
+    // Aplicar amortecimento
+    velocity.multiplyScalar(params.damping);
+    
+    // Atualizar posição
+    kayak.position.x += velocity.x;
+    kayak.position.z += velocity.z;
+    
+    // Animar remos quando se movendo
+    animatePaddles(speed);
+    
+    // Obter altura da onda na posição do caiaque
+    kayak.position.y = getWaveHeight(kayak.position.x, kayak.position.z) + 0.1;
+    
+    // Inclinar o caiaque baseado nas ondas
+    const frontPos = new THREE.Vector3(
+        kayak.position.x + Math.sin(kayak.rotation.y),
+        0,
+        kayak.position.z + Math.cos(kayak.rotation.y)
+    );
+    const backPos = new THREE.Vector3(
+        kayak.position.x - Math.sin(kayak.rotation.y),
+        0,
+        kayak.position.z - Math.cos(kayak.rotation.y)
+    );
+    
+    const frontHeight = getWaveHeight(frontPos.x, frontPos.z);
+    const backHeight = getWaveHeight(backPos.x, backPos.z);
+    
+    // Inclinação frente/trás (pitch)
+    kayak.rotation.x = Math.atan2(frontHeight - backHeight, 2.0) * 0.5;
+    
+    // Inclinação laterais (roll)
+    const rightPos = new THREE.Vector3(
+        kayak.position.x + Math.cos(kayak.rotation.y),
+        0,
+        kayak.position.z - Math.sin(kayak.rotation.y)
+    );
+    const leftPos = new THREE.Vector3(
+        kayak.position.x - Math.cos(kayak.rotation.y),
+        0,
+        kayak.position.z + Math.sin(kayak.rotation.y)
+    );
+    
+    const rightHeight = getWaveHeight(rightPos.x, rightPos.z);
+    const leftHeight = getWaveHeight(leftPos.x, leftPos.z);
+    
+    kayak.rotation.z = Math.atan2(rightHeight - leftHeight, 1.0) * 0.5;
 }
 
-function handleMovement() {
-    const speed = player.userData.speed || 0.1;
+function getWaveHeight(x, z) {
+    const time = clock.getElapsedTime() * params.waveSpeed;
+    const height = params.waveHeight;
+    const freq = params.waveFrequency;
     
-    if (keys.w) player.position.z -= speed;
-    if (keys.s) player.position.z += speed;
-    if (keys.a) player.position.x -= speed;
-    if (keys.d) player.position.x += speed;
+    // Usar a mesma fórmula do shader para consistência
+    let wave1 = Math.sin(x * freq + time) * height;
+    let wave2 = Math.cos(z * freq + time) * height;
     
-    // Aplicar a física das ondas ao jogador
+    return wave1 + wave2;
+}
+
+function animatePaddles(speed) {
+    if (!paddleLeft || !paddleRight) return;
+    
     const time = clock.getElapsedTime();
-    const waveHeight = getWaveHeight(player.position.x, player.position.z, time);
     
-    // Ajustar a altura do jogador com base na onda
-    // Quanto mais evoluído o veículo, menos ele é afetado pelas ondas
-    let waveEffect = 1.0;
-    if (collectibles >= 6) {
-        waveEffect = 0.3; // Barco é menos afetado
-    } else if (collectibles >= 3) {
-        waveEffect = 0.6; // Caiaque é moderadamente afetado
+    // Se estiver se movendo, animar os remos
+    if (speed > 0.005) {
+        // Alternar entre os remos
+        const paddlingRate = 3.0 + speed * 20; // Remadas mais rápidas com velocidade maior
+        
+        // Ciclo de remada
+        const leftCycle = Math.sin(time * paddlingRate);
+        const rightCycle = Math.sin(time * paddlingRate + Math.PI); // Defasado
+        
+        // Animação do remo esquerdo
+        paddleLeft.rotation.x = Math.PI / 4 + leftCycle * 0.5;
+        paddleLeft.rotation.z = leftCycle * 0.2;
+        
+        // Animação do remo direito
+        paddleRight.rotation.x = Math.PI / 4 + rightCycle * 0.5;
+        paddleRight.rotation.z = rightCycle * 0.2;
+        
+    } else {
+        // Posição de descanso
+        paddleLeft.rotation.x = Math.PI / 4;
+        paddleLeft.rotation.z = 0;
+        paddleRight.rotation.x = Math.PI / 4;
+        paddleRight.rotation.z = 0;
     }
+}
+
+function updateCamera() {
+    // Posicionar a câmera atrás e acima do caiaque
+    const offset = new THREE.Vector3(0, 2, 5);
     
-    // Altura base + efeito da onda
-    player.position.y = 0.5 + waveHeight * waveEffect;
+    // Rotacionar o offset baseado na rotação do caiaque
+    offset.applyAxisAngle(new THREE.Vector3(0, 1, 0), kayak.rotation.y);
     
-    // Inclinar o jogador com base na inclinação da onda
-    const waveGradientX = (getWaveHeight(player.position.x + 0.1, player.position.z, time) - 
-                          getWaveHeight(player.position.x - 0.1, player.position.z, time)) * 5;
-    const waveGradientZ = (getWaveHeight(player.position.x, player.position.z + 0.1, time) - 
-                          getWaveHeight(player.position.x, player.position.z - 0.1, time)) * 5;
+    // Posição alvo da câmera
+    const targetPosition = new THREE.Vector3().copy(kayak.position).add(offset);
     
-    // Aplicar rotação com base na inclinação da onda
-    player.rotation.z = -waveGradientX * waveEffect;
-    player.rotation.x = waveGradientZ * waveEffect;
+    // Suavizar o movimento da câmera
+    camera.position.lerp(targetPosition, 0.05);
     
-    // Atualiza a câmera
-    camera.position.x = player.position.x;
-    camera.position.z = player.position.z + 10;
-    camera.lookAt(player.position);
+    // Fazer a câmera olhar para o caiaque
+    camera.lookAt(
+        kayak.position.x,
+        kayak.position.y + 0.5, // Olhar um pouco acima do caiaque
+        kayak.position.z
+    );
+}
+
+function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
 }
 
 function animate() {
@@ -355,466 +577,416 @@ function animate() {
     
     const time = clock.getElapsedTime();
     
-    // Atualizar shader da água
+    // Atualizar o tempo para o shader do oceano com efeitos dinâmicos
     if (ocean && ocean.material.uniforms) {
-        ocean.material.uniforms.time.value = time;
-        ocean.material.uniforms.cameraPosCustom.value.copy(camera.position);
+        ocean.material.uniforms.uTime.value = time;
+        
+        // Atualizar direção do sol se houver ciclo dia/noite
+        // ocean.material.uniforms.sunDirection.value.set(
+        //    Math.sin(time * 0.05), 
+        //    Math.max(0.1, Math.sin(time * 0.05)), 
+        //    Math.cos(time * 0.05)
+        // ).normalize();
     }
     
-    // Atualizar aurora
-    if (aurora && aurora.material.uniforms) {
-        aurora.material.uniforms.time.value = time;
+    // Atualizar controles
+    controls.update();
+    
+    // Atualizar movimento do caiaque
+    updateKayakMovement();
+    
+    // Atualizar câmera
+    updateCamera();
+    
+    // Atualizar mundo procedural quando necessário
+    if (Math.floor(time) % 2 === 0 && !window.lastWorldUpdate) {
+        updateVisibleChunks(loadTextures());
+        window.lastWorldUpdate = true;
+    } else if (Math.floor(time) % 2 === 1) {
+        window.lastWorldUpdate = false;
     }
     
-    // Movimentação
-    handleMovement();
+    // Animação das plantas subaquáticas
+    animateSeaPlants();
     
-    // Verificar colisões
-    checkCollisions();
-    
-    // Atualizar ciclo dia/noite
-    updateDayNightCycle();
-    
-    // Atualizar tubarão
-    updateShark();
-    
-    // Atualizar viewVector do glow do sol
-    if (sun && sun.children[0] && sun.children[0].material.uniforms) {
-        sun.children[0].material.uniforms.viewVector.value.copy(camera.position);
-    }
-    
-    // Renderizar cena
+    // Render
     renderer.render(scene, camera);
 }
 
-// Ajustar tamanho da janela
-window.addEventListener('resize', () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-});
+// Animar plantas subaquáticas
+function animateSeaPlants() {
+    const time = clock.getElapsedTime();
+    
+    for (let i = 0; i < terrain.length; i++) {
+        const chunk = terrain[i];
+        chunk.traverse(child => {
+            if (child.userData && child.userData.type === 'seaplant') {
+                // Movimento de ondulação suave
+                child.rotation.y = Math.sin(time * 0.5 + child.position.x) * 0.1;
+                
+                // Atualizar altura com as ondas
+                const waveHeight = getWaveHeight(child.position.x, child.position.z, time);
+                child.position.y = -1 + waveHeight;
+            }
+        });
+    }
+}
 
-console.log("Script carregado");
+// Carregar texturas necessárias logo após a inicialização
+function loadTextures() {
+    // Criar carregador de cubemap para reflexos
+    const cubeTextureLoader = new THREE.CubeTextureLoader();
+    const environmentMap = cubeTextureLoader.load(cubeMapUrls);
+    environmentMap.encoding = THREE.sRGBEncoding;
+    
+    return {
+        waterNormal: textureLoader.load('https://threejs.org/examples/textures/waternormals.jpg', texture => {
+            texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+            texture.repeat.set(8, 8); // Repetir mais vezes para detalhes menores
+        }),
+        waterDetail: textureLoader.load('https://threejs.org/examples/textures/Water_1_M_Normal.jpg', texture => {
+            texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+            texture.repeat.set(16, 16); // Repetição alta para detalhes minúsculos
+        }),
+        caustics: textureLoader.load('https://threejs.org/examples/textures/caustics.jpg', texture => {
+            texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+            texture.repeat.set(8, 8);
+        }),
+        envMap: environmentMap,
+        sand: textureLoader.load('https://threejs.org/examples/textures/terrain/grasslight-big.jpg', texture => {
+            texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+            texture.repeat.set(5, 5);
+        }),
+        rock: textureLoader.load('https://threejs.org/examples/textures/terrain/backgrounddetailed6.jpg', texture => {
+            texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+            texture.repeat.set(10, 10);
+        }),
+        coral: textureLoader.load('https://threejs.org/examples/textures/Water_1_M_Normal.jpg', texture => {
+            texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+        })
+    };
+}
 
-// Adicionar função para verificar colisões
-function checkCollisions() {
-    islands.forEach(island => {
-        const distance = player.position.distanceTo(island.position);
-        const now = Date.now();
-        
-        if (distance < 3 && now - island.userData.lastCollected > 5000) {
-            collectibles++;
-            score += 100;
-            island.userData.lastCollected = now;
+// Adicionar função para gerar mundo procedural
+function generateProceduralWorld(textures) {
+    // Limpar mundo existente
+    for (let i = 0; i < terrain.length; i++) {
+        scene.remove(terrain[i]);
+    }
+    terrain = [];
+    
+    // Determinar quais chunks devem ser criados baseado na posição do jogador
+    updateVisibleChunks(textures);
+}
+
+// Função para gerenciar chunks visíveis baseado na posição do jogador
+function updateVisibleChunks(textures) {
+    if (!kayak) return;
+    
+    // Calcular posição do chunk atual do jogador
+    const chunkX = Math.floor(kayak.position.x / chunkSize);
+    const chunkZ = Math.floor(kayak.position.z / chunkSize);
+    
+    // Gerar chunks em um raio ao redor do jogador
+    const radius = Math.floor(chunksVisible / 2);
+    
+    for (let x = chunkX - radius; x <= chunkX + radius; x++) {
+        for (let z = chunkZ - radius; z <= chunkZ + radius; z++) {
+            const chunkKey = `${x},${z}`;
             
-            const items = ['concha', 'madeira', 'garrafa', 'pérola', 'rede'];
-            const item = items[Math.floor(Math.random() * items.length)];
-            console.log(`Item coletado: ${item}`);
+            // Verificar se o chunk já existe
+            const exists = terrain.some(obj => obj.userData.chunkKey === chunkKey);
             
-            updatePlayerVehicle();
-            updateScoreDisplay();
-        }
-    });
-}
-
-// Adicionar função para atualizar o veículo do jogador
-function updatePlayerVehicle() {
-    // Salvar posição e rotação
-    const position = player.position.clone();
-    const rotation = new THREE.Euler().copy(player.rotation);
-    
-    // Remover o jogador atual
-    scene.remove(player);
-    player.geometry.dispose();
-    player.material.dispose();
-    
-    // Criar novo veículo baseado nos itens coletados
-    let size, color, speed;
-    
-    if (collectibles >= 6) {
-        // Mini barco
-        size = [4, 1, 2];
-        color = 0x4682B4;
-        speed = 0.3;
-        console.log("Evoluiu para mini barco!");
-    } else if (collectibles >= 3) {
-        // Caiaque
-        size = [3, 0.5, 1];
-        color = 0x404040;
-        speed = 0.2;
-        console.log("Evoluiu para caiaque!");
-    } else {
-        // Prancha
-        size = [2, 0.2, 1];
-        color = 0x8B4513;
-        speed = 0.1;
-    }
-    
-    const geometry = new THREE.BoxGeometry(...size);
-    const material = new THREE.MeshPhongMaterial({ 
-        map: textures.wood,
-        color: color,
-        shininess: 60
-    });
-    
-    player = new THREE.Mesh(geometry, material);
-    player.position.copy(position);
-    player.rotation.copy(rotation);
-    player.userData.speed = speed;
-    
-    scene.add(player);
-}
-
-// Adicionar função para atualizar a pontuação
-function createScoreDisplay() {
-    const scoreDiv = document.getElementById('score');
-    if (scoreDiv) {
-        scoreDiv.textContent = `Pontuação: ${score}`;
-    }
-}
-
-function updateScoreDisplay() {
-    const scoreDiv = document.getElementById('score');
-    if (scoreDiv) {
-        scoreDiv.textContent = `Pontuação: ${score}`;
-    }
-}
-
-// Adicionar função para ciclo dia/noite
-function updateDayNightCycle() {
-    const time = clock.getElapsedTime() * 0.1;
-    const intensity = Math.sin(time) * 0.5 + 0.5;
-    
-    // Atualizar shader do céu
-    if (sky && sky.material.uniforms) {
-        sky.material.uniforms.time.value = time;
-        sky.material.uniforms.dayNightMix.value = intensity;
-    }
-    
-    // Mover o sol no arco do céu
-    if (sun) {
-        const sunAngle = time * Math.PI;
-        const sunHeight = Math.sin(sunAngle) * 200;
-        const sunDistance = Math.cos(sunAngle) * 400;
-        
-        sun.position.set(player.position.x + sunDistance, sunHeight, player.position.z - 200);
-        
-        // Aumentar o brilho do sol durante o dia
-        const sunIntensity = Math.max(0, intensity * 1.5 - 0.3);
-        sun.material.opacity = sunIntensity;
-        
-        // Atualizar glow do sol
-        if (sun.children[0] && sun.children[0].material.uniforms) {
-            sun.children[0].material.uniforms.viewVector.value.copy(camera.position);
-        }
-    }
-    
-    // Mover a lua no arco oposto do céu
-    if (moon) {
-        const moonAngle = time * Math.PI + Math.PI; // Oposto ao sol
-        const moonHeight = Math.sin(moonAngle) * 150;
-        const moonDistance = Math.cos(moonAngle) * 300;
-        
-        moon.position.set(player.position.x + moonDistance, moonHeight, player.position.z - 200);
-        
-        // Mostrar lua apenas durante a noite
-        moon.visible = intensity < 0.3;
-    }
-    
-    // Mudar cor do céu - não mais necessário pois o shader cuida disso
-    // scene.background = new THREE.Color().lerpColors(nightColor, dayColor, intensity);
-    
-    // Atualizar iluminação
-    scene.children.forEach(child => {
-        if (child instanceof THREE.DirectionalLight) {
-            child.intensity = intensity + 0.2;
-            
-            // Movimentar a luz direcional com o sol
-            if (sun) {
-                child.position.copy(sun.position);
+            if (!exists) {
+                // Criar novo chunk
+                createTerrainChunk(x, z, textures);
             }
         }
-    });
+    }
     
-    isNight = intensity < 0.3;
-    
-    // Chance de aparecer aurora durante a noite
-    if (isNight && !aurora && Math.random() < 0.001 && player.position.x > 50) {
-        createAurora();
+    // Remover chunks fora de alcance
+    for (let i = terrain.length - 1; i >= 0; i--) {
+        const chunk = terrain[i];
+        const [chunkObjX, chunkObjZ] = chunk.userData.chunkKey.split(',').map(Number);
+        
+        if (Math.abs(chunkObjX - chunkX) > radius + 1 || 
+            Math.abs(chunkObjZ - chunkZ) > radius + 1) {
+            scene.remove(chunk);
+            terrain.splice(i, 1);
+        }
     }
 }
 
-// Adicionar função para criar aurora
-function createAurora() {
-    const geometry = new THREE.PlaneGeometry(200, 50);
-    const material = new THREE.ShaderMaterial({
-        uniforms: {
-            time: { value: 0 },
-            color1: { value: new THREE.Color(0x00ff00) },
-            color2: { value: new THREE.Color(0x4B0082) }
-        },
-        vertexShader: `
-            varying vec2 vUv;
-            void main() {
-                vUv = uv;
-                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-            }
-        `,
-        fragmentShader: `
-            uniform float time;
-            uniform vec3 color1;
-            uniform vec3 color2;
-            varying vec2 vUv;
-            
-            void main() {
-                float noise = sin(vUv.y * 10.0 + time) * 0.5 + 0.5;
-                vec3 color = mix(color1, color2, noise);
-                float alpha = smoothstep(0.3, 0.7, noise) * 0.6;
-                gl_FragColor = vec4(color, alpha);
-            }
-        `,
-        transparent: true,
+// Criar um chunk de terreno com elementos procedurais
+function createTerrainChunk(chunkX, chunkZ, textures) {
+    const chunkGroup = new THREE.Group();
+    chunkGroup.userData.chunkKey = `${chunkX},${chunkZ}`;
+    
+    const chunkCenterX = chunkX * chunkSize + chunkSize / 2;
+    const chunkCenterZ = chunkZ * chunkSize + chunkSize / 2;
+    
+    // Usar deterministic noise baseado na posição do chunk e seed
+    const noiseSeed = worldSeed + chunkX * 1000 + chunkZ;
+    const random = seededRandom(noiseSeed);
+    
+    // Decidir se este chunk tem uma ilha
+    if (random() < 0.2) { // 20% de chance de ter uma ilha
+        createIsland(chunkGroup, chunkCenterX, chunkCenterZ, random, textures);
+    }
+    
+    // Adicionar algumas plantas/corais subaquáticos
+    const plantCount = Math.floor(random() * 10);
+    for (let i = 0; i < plantCount; i++) {
+        const plantX = chunkCenterX + (random() - 0.5) * chunkSize * 0.8;
+        const plantZ = chunkCenterZ + (random() - 0.5) * chunkSize * 0.8;
+        createSeaPlant(chunkGroup, plantX, plantZ, textures, random);
+    }
+    
+    scene.add(chunkGroup);
+    terrain.push(chunkGroup);
+}
+
+// Criar uma ilha em um chunk
+function createIsland(parent, x, z, random, textures) {
+    // Tamanho da ilha
+    const islandSize = 3 + random() * 8;
+    const islandHeight = 1 + random() * 3;
+    
+    // Criar geometria da ilha
+    const islandGeometry = new THREE.CylinderGeometry(islandSize, islandSize * 1.2, islandHeight, 16, 3);
+    
+    // Deformar a geometria para parecer mais natural
+    const vertices = islandGeometry.attributes.position;
+    for (let i = 0; i < vertices.count; i++) {
+        const x = vertices.getX(i);
+        const y = vertices.getY(i);
+        const z = vertices.getZ(i);
+        
+        // Aplicar ruído para criar terreno irregular
+        const distFromCenter = Math.sqrt(x * x + z * z);
+        const noise = simplex(x * 0.2, z * 0.2) * 0.5;
+        
+        // Deformar mais nas bordas
+        const deform = noise * (distFromCenter / islandSize);
+        
+        vertices.setX(i, x + x * deform * 0.3);
+        vertices.setZ(i, z + z * deform * 0.3);
+        
+        // Adicionar mais altura nas partes centrais
+        if (y > 0 && distFromCenter < islandSize * 0.7) {
+            vertices.setY(i, y + noise * 0.5);
+        }
+    }
+    
+    // Recalcular normais após deformação
+    islandGeometry.computeVertexNormals();
+    
+    // Material para a ilha
+    const islandMaterial = new THREE.MeshStandardMaterial({
+        map: textures.sand,
+        roughness: 0.8,
+        metalness: 0.1,
+        flatShading: true
+    });
+    
+    const island = new THREE.Mesh(islandGeometry, islandMaterial);
+    island.position.set(x, 0, z);
+    island.rotation.y = random() * Math.PI * 2;
+    
+    // Adicionar algumas rochas na ilha
+    const rockCount = Math.floor(random() * 5) + 1;
+    for (let i = 0; i < rockCount; i++) {
+        createRock(island, random() * islandSize * 0.7, islandHeight / 2, random() * islandSize * 0.7, textures, random);
+    }
+    
+    // Adicionar algumas palmeiras
+    const palmCount = Math.floor(random() * 3) + 1;
+    for (let i = 0; i < palmCount; i++) {
+        const palmX = (random() - 0.5) * islandSize * 0.8;
+        const palmZ = (random() - 0.5) * islandSize * 0.8;
+        const distFromCenter = Math.sqrt(palmX * palmX + palmZ * palmZ);
+        
+        // Colocar palmeiras mais próximas das bordas
+        if (distFromCenter > islandSize * 0.3) {
+            createPalmTree(island, palmX, islandHeight / 2, palmZ, textures, random);
+        }
+    }
+    
+    parent.add(island);
+}
+
+// Criar rocha
+function createRock(parent, x, y, z, textures, random) {
+    const rockGeometry = new THREE.DodecahedronGeometry(0.5 + random() * 0.5, 1);
+    
+    // Deformar a geometria para parecer mais natural
+    const vertices = rockGeometry.attributes.position;
+    for (let i = 0; i < vertices.count; i++) {
+        const vx = vertices.getX(i);
+        const vy = vertices.getY(i);
+        const vz = vertices.getZ(i);
+        
+        const noise = random() * 0.2;
+        vertices.setX(i, vx * (1 + noise));
+        vertices.setY(i, vy * (1 + noise));
+        vertices.setZ(i, vz * (1 + noise));
+    }
+    
+    rockGeometry.computeVertexNormals();
+    
+    const rockMaterial = new THREE.MeshStandardMaterial({
+        map: textures.rock,
+        roughness: 0.9,
+        metalness: 0.1,
+        flatShading: true
+    });
+    
+    const rock = new THREE.Mesh(rockGeometry, rockMaterial);
+    rock.position.set(x, y, z);
+    rock.rotation.set(random() * Math.PI, random() * Math.PI, random() * Math.PI);
+    rock.scale.set(
+        0.7 + random() * 0.6,
+        0.7 + random() * 0.6,
+        0.7 + random() * 0.6
+    );
+    
+    parent.add(rock);
+    return rock;
+}
+
+// Criar palmeira
+function createPalmTree(parent, x, y, z, textures, random) {
+    const palmGroup = new THREE.Group();
+    
+    // Tronco da palmeira
+    const trunkGeometry = new THREE.CylinderGeometry(0.1, 0.15, 2 + random() * 1.5, 8, 4);
+    const trunkMaterial = new THREE.MeshStandardMaterial({
+        color: 0x8B4513,
+        roughness: 0.9,
+        metalness: 0.1
+    });
+    
+    // Curvar o tronco
+    const vertices = trunkGeometry.attributes.position;
+    const bend = (random() * 0.2) + 0.1;
+    const bendDir = random() * Math.PI * 2;
+    
+    for (let i = 0; i < vertices.count; i++) {
+        const vy = vertices.getY(i);
+        const t = (vy + trunkGeometry.parameters.height * 0.5) / trunkGeometry.parameters.height;
+        
+        if (t > 0.5) {
+            const bendAmount = (t - 0.5) * 2 * bend;
+            vertices.setX(i, vertices.getX(i) + Math.cos(bendDir) * bendAmount);
+            vertices.setZ(i, vertices.getZ(i) + Math.sin(bendDir) * bendAmount);
+        }
+    }
+    
+    trunkGeometry.computeVertexNormals();
+    
+    const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+    trunk.position.y = trunkGeometry.parameters.height * 0.5;
+    palmGroup.add(trunk);
+    
+    // Folhas da palmeira
+    const leafCount = 5 + Math.floor(random() * 3);
+    const leafMaterial = new THREE.MeshStandardMaterial({
+        color: 0x2E8B57,
+        roughness: 0.8,
+        metalness: 0.1,
         side: THREE.DoubleSide
     });
     
-    aurora = new THREE.Mesh(geometry, material);
-    aurora.position.set(player.position.x, 100, player.position.z);
-    aurora.rotation.x = Math.PI / 3;
-    scene.add(aurora);
-    
-    console.log("Aurora criada!");
-    
-    setTimeout(() => {
-        scene.remove(aurora);
-        aurora = null;
-    }, 30000);
-}
-
-// Adicionar função para criar tubarão
-function createShark() {
-    // Grupo para o tubarão
-    shark = new THREE.Group();
-    
-    // Corpo do tubarão
-    const bodyGeometry = new THREE.CylinderGeometry(0.4, 0.8, 4, 8);
-    bodyGeometry.rotateZ(Math.PI / 2);
-    const bodyMaterial = new THREE.MeshPhongMaterial({ color: 0x0A1929 });
-    const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-    shark.add(body);
-    
-    // Barbatana dorsal
-    const finGeometry = new THREE.ConeGeometry(0.5, 1, 4);
-    finGeometry.rotateX(Math.PI / 2);
-    const finMaterial = new THREE.MeshPhongMaterial({ color: 0x0A1929 });
-    const fin = new THREE.Mesh(finGeometry, finMaterial);
-    fin.position.set(0, 1, 0);
-    shark.add(fin);
-    
-    // Posicionar o tubarão
-    const angle = Math.random() * Math.PI * 2;
-    const distance = 25;
-    shark.position.x = player.position.x + Math.cos(angle) * distance;
-    shark.position.z = player.position.z + Math.sin(angle) * distance;
-    shark.position.y = 0.5;
-    
-    // Guardar posição central para movimento circular
-    shark.userData.centerX = shark.position.x;
-    shark.userData.centerZ = shark.position.z;
-    shark.userData.startTime = clock.getElapsedTime();
-    
-    scene.add(shark);
-    console.log("Tubarão criado!");
-    
-    setTimeout(() => {
-        scene.remove(shark);
-        shark = null;
-    }, 30000);
-}
-
-// Adicionar função para atualizar o tubarão
-function updateShark() {
-    if (shark) {
-        const time = clock.getElapsedTime();
-        const startTime = shark.userData.startTime;
-        const elapsedTime = time - startTime;
+    for (let i = 0; i < leafCount; i++) {
+        const leafLength = 1 + random() * 0.5;
+        const leafWidth = 0.2 + random() * 0.2;
         
-        // Movimento circular
-        const radius = 10;
-        const centerX = shark.userData.centerX;
-        const centerZ = shark.userData.centerZ;
+        // Criar forma da folha
+        const leafShape = new THREE.Shape();
+        leafShape.moveTo(0, 0);
+        leafShape.lineTo(leafLength * 0.2, leafWidth * 0.5);
+        leafShape.lineTo(leafLength, 0);
+        leafShape.lineTo(leafLength * 0.2, -leafWidth * 0.5);
+        leafShape.lineTo(0, 0);
         
-        shark.position.x = centerX + Math.cos(elapsedTime) * radius;
-        shark.position.z = centerZ + Math.sin(elapsedTime) * radius;
+        const leafGeometry = new THREE.ShapeGeometry(leafShape, 6);
+        const leaf = new THREE.Mesh(leafGeometry, leafMaterial);
         
-        // Rotação para olhar na direção do movimento
-        shark.rotation.y = elapsedTime + Math.PI / 2;
+        // Posicionar no topo do tronco
+        leaf.position.y = trunkGeometry.parameters.height;
         
-        // Efeito no jogador quando próximo
-        const distanceToPlayer = shark.position.distanceTo(player.position);
-        if (distanceToPlayer < 5) {
-            // Menos efeito no barco, mais na prancha
-            const effectIntensity = collectibles >= 6 ? 0.2 : 1.0;
-            player.position.y = 0.5 + Math.sin(time * 5) * 0.3 * effectIntensity;
-        }
-    } else if (Math.random() < 0.0008) { // ~5% por minuto
-        createShark();
+        // Rotacionar aleatoriamente
+        const angle = (i / leafCount) * Math.PI * 2;
+        leaf.rotation.z = -Math.PI / 4 - random() * Math.PI / 4;
+        leaf.rotation.y = angle;
+        
+        palmGroup.add(leaf);
     }
+    
+    palmGroup.position.set(x, y, z);
+    parent.add(palmGroup);
+    return palmGroup;
 }
 
-// Adicionar função para calcular a altura da onda em uma posição específica
-function getWaveHeight(x, z, time) {
-    // Usar as mesmas fórmulas de onda do shader (mais suaves)
-    const wave1 = Math.sin(x * 0.01 + time * 0.2) * 
-                 Math.cos(z * 0.01 + time * 0.15) * 0.5;
-    const wave2 = Math.sin(x * 0.02 + time * 0.15) * 0.3;
-    const wave3 = Math.cos(z * 0.02 + time * 0.2) * 0.3;
-    const wave4 = Math.sin(x * 0.05 + z * 0.05 + time * 0.25) * 0.15;
+// Criar planta subaquática
+function createSeaPlant(parent, x, z, textures, random) {
+    const plantHeight = 0.5 + random() * 1;
+    const plantWidth = 0.3 + random() * 0.3;
     
-    return wave1 + wave2 + wave3 + wave4;
-}
-
-// Adicionar após a função createOcean
-function createSky() {
-    // Criar céu utilizando uma grande esfera
-    const skyGeometry = new THREE.SphereGeometry(500, 32, 32);
-    // Inverter a esfera para que as texturas fiquem do lado de dentro
-    skyGeometry.scale(-1, 1, 1);
+    const plantGeometry = new THREE.CylinderGeometry(0, plantWidth, plantHeight, 8, 4, true);
     
-    // Carregar texturas do céu
-    const dayTexture = textureLoader.load('https://threejs.org/examples/textures/2294472375_24a3b8ef46_o.jpg');
-    const nightTexture = textureLoader.load('https://threejs.org/examples/textures/stars.jpg');
-    const cloudTexture = textureLoader.load('https://threejs.org/examples/textures/cloud.png');
+    // Deformar para parecer mais orgânico
+    const vertices = plantGeometry.attributes.position;
+    for (let i = 0; i < vertices.count; i++) {
+        const vx = vertices.getX(i);
+        const vy = vertices.getY(i);
+        const vz = vertices.getZ(i);
+        
+        const waveFactor = 0.2 * Math.sin(vy * 10);
+        vertices.setX(i, vx + waveFactor);
+        vertices.setZ(i, vz + waveFactor);
+    }
     
-    cloudTexture.wrapS = cloudTexture.wrapT = THREE.RepeatWrapping;
-    cloudTexture.repeat.set(8, 4);
+    plantGeometry.computeVertexNormals();
     
-    // Criar shader material para o céu
-    const skyMaterial = new THREE.ShaderMaterial({
-        uniforms: {
-            dayTexture: { value: dayTexture },
-            nightTexture: { value: nightTexture },
-            cloudTexture: { value: cloudTexture },
-            time: { value: 0 },
-            dayNightMix: { value: 1.0 }
-        },
-        vertexShader: `
-            varying vec2 vUv;
-            varying vec3 vPos;
-            
-            void main() {
-                vUv = uv;
-                vPos = position.xyz;
-                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-            }
-        `,
-        fragmentShader: `
-            uniform sampler2D dayTexture;
-            uniform sampler2D nightTexture;
-            uniform sampler2D cloudTexture;
-            uniform float time;
-            uniform float dayNightMix;
-            
-            varying vec2 vUv;
-            varying vec3 vPos;
-            
-            void main() {
-                // Coordenadas para textura de nuvens se movendo
-                vec2 cloudUv = vUv + vec2(time * 0.01, 0.0);
-                
-                // Amostra de nuvens com transparência variável
-                vec4 clouds = texture2D(cloudTexture, cloudUv);
-                
-                // Textura de dia e noite
-                vec4 dayColor = texture2D(dayTexture, vUv);
-                vec4 nightColor = texture2D(nightTexture, vUv);
-                
-                // Misturar dia e noite com base na hora
-                vec4 baseColor = mix(nightColor, dayColor, dayNightMix);
-                
-                // Adicionar nuvens com base na transparência
-                float cloudFactor = dayNightMix * 0.9; // Reduzir visibilidade das nuvens à noite
-                vec4 finalColor = mix(baseColor, vec4(1.0, 1.0, 1.0, 1.0), clouds.r * cloudFactor * 0.7);
-                
-                gl_FragColor = finalColor;
-            }
-        `,
-        side: THREE.BackSide
-    });
-    
-    const sky = new THREE.Mesh(skyGeometry, skyMaterial);
-    scene.add(sky);
-    
-    console.log("Céu criado com sol, nuvens e estrelas");
-    
-    return sky;
-}
-
-// Criar sol
-function createSun() {
-    const sunGeometry = new THREE.SphereGeometry(10, 16, 16);
-    const sunMaterial = new THREE.MeshBasicMaterial({
-        color: 0xffff80,
+    const plantMaterial = new THREE.MeshStandardMaterial({
+        color: new THREE.Color(
+            0.1 + random() * 0.1,
+            0.5 + random() * 0.3,
+            0.3 + random() * 0.2
+        ),
+        roughness: 0.8,
+        metalness: 0.1,
         transparent: true,
-        opacity: 0.8
+        opacity: 0.9,
+        side: THREE.DoubleSide
     });
     
-    const sun = new THREE.Mesh(sunGeometry, sunMaterial);
-    sun.position.set(100, 100, -100);
+    const plant = new THREE.Mesh(plantGeometry, plantMaterial);
     
-    // Adicionar glow ao sol
-    const sunGlowGeometry = new THREE.SphereGeometry(12, 16, 16);
-    const sunGlowMaterial = new THREE.ShaderMaterial({
-        uniforms: {
-            glowColor: { value: new THREE.Color(0xffff00) },
-            viewVector: { value: new THREE.Vector3() }
-        },
-        vertexShader: `
-            uniform vec3 viewVector;
-            varying float intensity;
-            void main() {
-                vec3 vNormal = normalize(normal);
-                intensity = pow(0.7 - dot(vNormal, vec3(0, 0, 1.0)), 2.0);
-                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-            }
-        `,
-        fragmentShader: `
-            uniform vec3 glowColor;
-            varying float intensity;
-            void main() {
-                vec3 glow = glowColor * intensity;
-                gl_FragColor = vec4(glow, 1.0);
-            }
-        `,
-        side: THREE.BackSide,
-        blending: THREE.AdditiveBlending,
-        transparent: true
-    });
+    // Posicionar a planta no fundo do oceano
+    const time = clock.getElapsedTime();
+    const waveHeight = getWaveHeight(x, z, time);
+    plant.position.set(x, -1 + waveHeight, z);
+    plant.rotation.y = random() * Math.PI * 2;
     
-    const sunGlow = new THREE.Mesh(sunGlowGeometry, sunGlowMaterial);
-    sun.add(sunGlow);
-    
-    scene.add(sun);
-    console.log("Sol criado");
-    
-    return sun;
+    parent.add(plant);
+    return plant;
 }
 
-// Criar lua
-function createMoon() {
-    const moonGeometry = new THREE.SphereGeometry(5, 16, 16);
-    const moonTexture = textureLoader.load('https://threejs.org/examples/textures/planets/moon_1024.jpg');
-    const moonMaterial = new THREE.MeshPhongMaterial({
-        map: moonTexture,
-        shininess: 5,
-        emissive: 0x222222
-    });
-    
-    const moon = new THREE.Mesh(moonGeometry, moonMaterial);
-    moon.position.set(-100, 50, -100);
-    moon.visible = false; // Inicialmente oculta durante o dia
-    
-    scene.add(moon);
-    console.log("Lua criada");
-    
-    return moon;
+// Funções auxiliares para geração procedural
+
+// Função de ruído para terreno
+function simplex(x, z) {
+    // Implementação simples de ruído pseudo-aleatório
+    return Math.sin(x * 0.1) * Math.cos(z * 0.1) * 2.0;
+}
+
+// Função de aleatoriedade com seed para determinismo
+function seededRandom(seed) {
+    let value = seed;
+    return function() {
+        value = (value * 9301 + 49297) % 233280;
+        return value / 233280;
+    };
 } 

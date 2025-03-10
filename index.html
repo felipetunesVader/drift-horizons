@@ -3,25 +3,54 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Drift Horizons</title>
+    <title>Liminal Ocean Kayaking</title>
     <style>
-        body { margin: 0; overflow: hidden; }
-        canvas { display: block; }
-        #score {
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background-color: #000;
+        }
+        canvas { 
+            display: block; 
+        }
+        #loading {
             position: absolute;
-            top: 20px;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 24px;
+            text-align: center;
+        }
+        #ui {
+            position: absolute;
+            bottom: 20px;
             left: 20px;
             color: white;
-            font-size: 24px;
-            font-family: Arial;
-            text-shadow: 2px 2px 2px rgba(0,0,0,0.5);
+            font-family: Arial, sans-serif;
+            font-size: 16px;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
+            pointer-events: none;
         }
     </style>
 </head>
 <body>
-    <div id="score"></div>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
-    <script src="main.js"></script>
+    <div id="loading">Carregando...</div>
+    <div id="ui">
+        Pressione W/A/S/D para mover o caiaque<br>
+        Segure SHIFT para remar mais rápido
+    </div>
+    
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@latest/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@latest/examples/jsm/"
+            }
+        }
+    </script>
+    
+    <script type="module" src="main.js"></script>
 </body>
 </html> 
