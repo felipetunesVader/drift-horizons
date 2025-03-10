@@ -65,6 +65,11 @@ function init() {
     createIslands();
     createScoreDisplay();
     
+    // Adicionar céu, sol e lua
+    sky = createSky();
+    sun = createSun();
+    moon = createMoon();
+    
     // Configurar controles
     document.addEventListener('keydown', (e) => keys[e.key.toLowerCase()] = true);
     document.addEventListener('keyup', (e) => keys[e.key.toLowerCase()] = false);
@@ -101,8 +106,8 @@ function createOcean() {
             normalMap: { value: normalMap },
             dudvMap: { value: dudvMap },
             foamTexture: { value: foamTexture },
-            waterColor: { value: new THREE.Color(0x0055aa) },
-            deepWaterColor: { value: new THREE.Color(0x001133) },
+            waterColor: { value: new THREE.Color(0x004080) },
+            deepWaterColor: { value: new THREE.Color(0x001030) },
             sunDirection: { value: new THREE.Vector3(0.5, 0.5, 0) },
             sunColor: { value: new THREE.Color(1.0, 1.0, 0.8) },
             cameraPosCustom: { value: new THREE.Vector3() }
@@ -120,26 +125,26 @@ function createOcean() {
                 vPosition = position;
                 vNormal = normal;
                 
-                // Criar ondas mais complexas
-                float wave1 = sin(position.x * 0.02 + time * 0.5) * 
-                             cos(position.z * 0.02 + time * 0.3) * 1.0;
-                float wave2 = sin(position.x * 0.04 + time * 0.3) * 0.6;
-                float wave3 = cos(position.z * 0.04 + time * 0.4) * 0.6;
-                float wave4 = sin(position.x * 0.1 + position.z * 0.1 + time * 0.5) * 0.3;
+                // Criar ondas mais suaves e menos agitadas
+                float wave1 = sin(position.x * 0.01 + time * 0.2) * 
+                             cos(position.z * 0.01 + time * 0.15) * 0.5;
+                float wave2 = sin(position.x * 0.02 + time * 0.15) * 0.3;
+                float wave3 = cos(position.z * 0.02 + time * 0.2) * 0.3;
+                float wave4 = sin(position.x * 0.05 + position.z * 0.05 + time * 0.25) * 0.15;
                 
                 vec3 pos = position;
                 pos.y += wave1 + wave2 + wave3 + wave4;
                 
                 // Calcular normal baseada nas ondas
                 vec3 tangent = normalize(vec3(1.0, 
-                    cos(position.x * 0.02 + time * 0.5) * 0.02 +
-                    cos(position.x * 0.04 + time * 0.3) * 0.024 +
-                    sin(position.x * 0.1 + position.z * 0.1 + time * 0.5) * 0.03,
+                    cos(position.x * 0.01 + time * 0.2) * 0.01 +
+                    cos(position.x * 0.02 + time * 0.15) * 0.012 +
+                    sin(position.x * 0.05 + position.z * 0.05 + time * 0.25) * 0.015,
                     0.0));
                 vec3 bitangent = normalize(vec3(0.0, 
-                    sin(position.z * 0.02 + time * 0.3) * 0.02 +
-                    sin(position.z * 0.04 + time * 0.4) * 0.024 +
-                    cos(position.x * 0.1 + position.z * 0.1 + time * 0.5) * 0.03,
+                    sin(position.z * 0.01 + time * 0.15) * 0.01 +
+                    sin(position.z * 0.02 + time * 0.2) * 0.012 +
+                    cos(position.x * 0.05 + position.z * 0.05 + time * 0.25) * 0.015,
                     1.0));
                 vNormal = normalize(cross(tangent, bitangent));
                 
@@ -169,10 +174,10 @@ function createOcean() {
             const float fresnelPower = 2.0;
             
             void main() {
-                // Movimento da textura
+                // Movimento da textura mais suave
                 vec2 distortedUv = vUv * 8.0;
-                vec2 distortion1 = (texture2D(dudvMap, vec2(distortedUv.x + time * 0.05, distortedUv.y + time * 0.04)).rg * 2.0 - 1.0) * 0.02;
-                vec2 distortion2 = (texture2D(dudvMap, vec2(-distortedUv.x + time * 0.06, distortedUv.y + time * 0.03)).rg * 2.0 - 1.0) * 0.02;
+                vec2 distortion1 = (texture2D(dudvMap, vec2(distortedUv.x + time * 0.02, distortedUv.y + time * 0.02)).rg * 2.0 - 1.0) * 0.01;
+                vec2 distortion2 = (texture2D(dudvMap, vec2(-distortedUv.x + time * 0.03, distortedUv.y + time * 0.01)).rg * 2.0 - 1.0) * 0.01;
                 
                 vec2 totalDistortion = distortion1 + distortion2;
                 
@@ -194,25 +199,25 @@ function createOcean() {
                 // Profundidade simulada
                 float depth = clamp(vPosition.y * 0.5 + 0.5, 0.0, 1.0);
                 
-                // Caustics (efeito de luz subaquática)
-                float caustics = texture2D(dudvMap, vUv * 5.0 + time * 0.05).r * 0.5 + 0.5;
-                caustics *= texture2D(dudvMap, vUv * 4.0 - time * 0.04).g * 0.5 + 0.5;
-                caustics = pow(caustics, 2.0) * 2.0;
+                // Caustics (efeito de luz subaquática) mais sutil
+                float caustics = texture2D(dudvMap, vUv * 5.0 + time * 0.02).r * 0.5 + 0.5;
+                caustics *= texture2D(dudvMap, vUv * 4.0 - time * 0.02).g * 0.5 + 0.5;
+                caustics = pow(caustics, 2.0) * 1.5;
                 
-                // Espuma nas cristas das ondas
-                float foam = texture2D(foamTexture, vUv * 6.0 + totalDistortion + vec2(time * 0.04, time * 0.02)).r;
+                // Espuma nas cristas das ondas (menos proeminente)
+                float foam = texture2D(foamTexture, vUv * 6.0 + totalDistortion + vec2(time * 0.02, time * 0.01)).r;
                 float waveHeight = clamp(vPosition.y * 2.0, 0.0, 1.0);
-                foam *= smoothstep(0.6, 1.0, waveHeight);
+                foam *= smoothstep(0.7, 1.0, waveHeight) * 0.7; // Menos espuma
                 
                 // Cor final
                 vec3 color = mix(deepWaterColor, waterColor, depth);
-                color += specular * sunColor * 0.5;
-                color = mix(color, vec3(1.0), foam * 0.5);
-                color = mix(color, vec3(1.0, 1.0, 1.0), fresnel * 0.5);
-                color += caustics * sunColor * 0.1 * (1.0 - depth);
+                color += specular * sunColor * 0.4;
+                color = mix(color, vec3(1.0), foam * 0.3); // Espuma menos intensa
+                color = mix(color, vec3(1.0, 1.0, 1.0), fresnel * 0.4);
+                color += caustics * sunColor * 0.05 * (1.0 - depth);
                 
-                // Tornar a água menos clara (mais opaca)
-                gl_FragColor = vec4(color, 0.95); // Aumentar a opacidade
+                // Tornar a água mais opaca
+                gl_FragColor = vec4(color, 0.98); // Aumentar ainda mais a opacidade
             }
         `,
         transparent: true,
@@ -373,6 +378,11 @@ function animate() {
     // Atualizar tubarão
     updateShark();
     
+    // Atualizar viewVector do glow do sol
+    if (sun && sun.children[0] && sun.children[0].material.uniforms) {
+        sun.children[0].material.uniforms.viewVector.value.copy(camera.position);
+    }
+    
     // Renderizar cena
     renderer.render(scene, camera);
 }
@@ -475,15 +485,54 @@ function updateDayNightCycle() {
     const time = clock.getElapsedTime() * 0.1;
     const intensity = Math.sin(time) * 0.5 + 0.5;
     
-    // Mudar cor do céu
-    const dayColor = new THREE.Color(0x87CEEB);
-    const nightColor = new THREE.Color(0x000033);
-    scene.background = new THREE.Color().lerpColors(nightColor, dayColor, intensity);
+    // Atualizar shader do céu
+    if (sky && sky.material.uniforms) {
+        sky.material.uniforms.time.value = time;
+        sky.material.uniforms.dayNightMix.value = intensity;
+    }
+    
+    // Mover o sol no arco do céu
+    if (sun) {
+        const sunAngle = time * Math.PI;
+        const sunHeight = Math.sin(sunAngle) * 200;
+        const sunDistance = Math.cos(sunAngle) * 400;
+        
+        sun.position.set(player.position.x + sunDistance, sunHeight, player.position.z - 200);
+        
+        // Aumentar o brilho do sol durante o dia
+        const sunIntensity = Math.max(0, intensity * 1.5 - 0.3);
+        sun.material.opacity = sunIntensity;
+        
+        // Atualizar glow do sol
+        if (sun.children[0] && sun.children[0].material.uniforms) {
+            sun.children[0].material.uniforms.viewVector.value.copy(camera.position);
+        }
+    }
+    
+    // Mover a lua no arco oposto do céu
+    if (moon) {
+        const moonAngle = time * Math.PI + Math.PI; // Oposto ao sol
+        const moonHeight = Math.sin(moonAngle) * 150;
+        const moonDistance = Math.cos(moonAngle) * 300;
+        
+        moon.position.set(player.position.x + moonDistance, moonHeight, player.position.z - 200);
+        
+        // Mostrar lua apenas durante a noite
+        moon.visible = intensity < 0.3;
+    }
+    
+    // Mudar cor do céu - não mais necessário pois o shader cuida disso
+    // scene.background = new THREE.Color().lerpColors(nightColor, dayColor, intensity);
     
     // Atualizar iluminação
     scene.children.forEach(child => {
         if (child instanceof THREE.DirectionalLight) {
             child.intensity = intensity + 0.2;
+            
+            // Movimentar a luz direcional com o sol
+            if (sun) {
+                child.position.copy(sun.position);
+            }
         }
     });
     
@@ -614,12 +663,158 @@ function updateShark() {
 
 // Adicionar função para calcular a altura da onda em uma posição específica
 function getWaveHeight(x, z, time) {
-    // Usar as mesmas fórmulas de onda do shader
-    const wave1 = Math.sin(x * 0.02 + time * 0.5) * 
-                 Math.cos(z * 0.02 + time * 0.3) * 1.0;
-    const wave2 = Math.sin(x * 0.04 + time * 0.3) * 0.6;
-    const wave3 = Math.cos(z * 0.04 + time * 0.4) * 0.6;
-    const wave4 = Math.sin(x * 0.1 + z * 0.1 + time * 0.5) * 0.3;
+    // Usar as mesmas fórmulas de onda do shader (mais suaves)
+    const wave1 = Math.sin(x * 0.01 + time * 0.2) * 
+                 Math.cos(z * 0.01 + time * 0.15) * 0.5;
+    const wave2 = Math.sin(x * 0.02 + time * 0.15) * 0.3;
+    const wave3 = Math.cos(z * 0.02 + time * 0.2) * 0.3;
+    const wave4 = Math.sin(x * 0.05 + z * 0.05 + time * 0.25) * 0.15;
     
     return wave1 + wave2 + wave3 + wave4;
+}
+
+// Adicionar após a função createOcean
+function createSky() {
+    // Criar céu utilizando uma grande esfera
+    const skyGeometry = new THREE.SphereGeometry(500, 32, 32);
+    // Inverter a esfera para que as texturas fiquem do lado de dentro
+    skyGeometry.scale(-1, 1, 1);
+    
+    // Carregar texturas do céu
+    const dayTexture = textureLoader.load('https://threejs.org/examples/textures/2294472375_24a3b8ef46_o.jpg');
+    const nightTexture = textureLoader.load('https://threejs.org/examples/textures/stars.jpg');
+    const cloudTexture = textureLoader.load('https://threejs.org/examples/textures/cloud.png');
+    
+    cloudTexture.wrapS = cloudTexture.wrapT = THREE.RepeatWrapping;
+    cloudTexture.repeat.set(8, 4);
+    
+    // Criar shader material para o céu
+    const skyMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+            dayTexture: { value: dayTexture },
+            nightTexture: { value: nightTexture },
+            cloudTexture: { value: cloudTexture },
+            time: { value: 0 },
+            dayNightMix: { value: 1.0 }
+        },
+        vertexShader: `
+            varying vec2 vUv;
+            varying vec3 vPos;
+            
+            void main() {
+                vUv = uv;
+                vPos = position.xyz;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform sampler2D dayTexture;
+            uniform sampler2D nightTexture;
+            uniform sampler2D cloudTexture;
+            uniform float time;
+            uniform float dayNightMix;
+            
+            varying vec2 vUv;
+            varying vec3 vPos;
+            
+            void main() {
+                // Coordenadas para textura de nuvens se movendo
+                vec2 cloudUv = vUv + vec2(time * 0.01, 0.0);
+                
+                // Amostra de nuvens com transparência variável
+                vec4 clouds = texture2D(cloudTexture, cloudUv);
+                
+                // Textura de dia e noite
+                vec4 dayColor = texture2D(dayTexture, vUv);
+                vec4 nightColor = texture2D(nightTexture, vUv);
+                
+                // Misturar dia e noite com base na hora
+                vec4 baseColor = mix(nightColor, dayColor, dayNightMix);
+                
+                // Adicionar nuvens com base na transparência
+                float cloudFactor = dayNightMix * 0.9; // Reduzir visibilidade das nuvens à noite
+                vec4 finalColor = mix(baseColor, vec4(1.0, 1.0, 1.0, 1.0), clouds.r * cloudFactor * 0.7);
+                
+                gl_FragColor = finalColor;
+            }
+        `,
+        side: THREE.BackSide
+    });
+    
+    const sky = new THREE.Mesh(skyGeometry, skyMaterial);
+    scene.add(sky);
+    
+    console.log("Céu criado com sol, nuvens e estrelas");
+    
+    return sky;
+}
+
+// Criar sol
+function createSun() {
+    const sunGeometry = new THREE.SphereGeometry(10, 16, 16);
+    const sunMaterial = new THREE.MeshBasicMaterial({
+        color: 0xffff80,
+        transparent: true,
+        opacity: 0.8
+    });
+    
+    const sun = new THREE.Mesh(sunGeometry, sunMaterial);
+    sun.position.set(100, 100, -100);
+    
+    // Adicionar glow ao sol
+    const sunGlowGeometry = new THREE.SphereGeometry(12, 16, 16);
+    const sunGlowMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+            glowColor: { value: new THREE.Color(0xffff00) },
+            viewVector: { value: new THREE.Vector3() }
+        },
+        vertexShader: `
+            uniform vec3 viewVector;
+            varying float intensity;
+            void main() {
+                vec3 vNormal = normalize(normal);
+                intensity = pow(0.7 - dot(vNormal, vec3(0, 0, 1.0)), 2.0);
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+        `,
+        fragmentShader: `
+            uniform vec3 glowColor;
+            varying float intensity;
+            void main() {
+                vec3 glow = glowColor * intensity;
+                gl_FragColor = vec4(glow, 1.0);
+            }
+        `,
+        side: THREE.BackSide,
+        blending: THREE.AdditiveBlending,
+        transparent: true
+    });
+    
+    const sunGlow = new THREE.Mesh(sunGlowGeometry, sunGlowMaterial);
+    sun.add(sunGlow);
+    
+    scene.add(sun);
+    console.log("Sol criado");
+    
+    return sun;
+}
+
+// Criar lua
+function createMoon() {
+    const moonGeometry = new THREE.SphereGeometry(5, 16, 16);
+    const moonTexture = textureLoader.load('https://threejs.org/examples/textures/planets/moon_1024.jpg');
+    const moonMaterial = new THREE.MeshPhongMaterial({
+        map: moonTexture,
+        shininess: 5,
+        emissive: 0x222222
+    });
+    
+    const moon = new THREE.Mesh(moonGeometry, moonMaterial);
+    moon.position.set(-100, 50, -100);
+    moon.visible = false; // Inicialmente oculta durante o dia
+    
+    scene.add(moon);
+    console.log("Lua criada");
+    
+    return moon;
 } 
