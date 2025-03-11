@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+import { PMREMGenerator } from 'three';
 
 // Variáveis globais
 let scene, camera, renderer, controls;
@@ -93,7 +95,7 @@ function init() {
     const textures = loadTextures();
     
     // Criar elementos do jogo com as novas texturas
-    createSkybox();
+    createSkybox(textures);
     createOcean(textures);
     createKayak();
     
@@ -113,49 +115,50 @@ function init() {
     animate();
 }
 
-function createSkybox() {
-    // Criar uma esfera grande para o skybox com gradiente
-    const geometry = new THREE.SphereGeometry(500, 32, 32);
-    geometry.scale(-1, 1, 1); // Virar a esfera ao contrário
+function createSkybox(textures) {
+    // Usar o arquivo HDR diretamente como background da cena
+    // A criação do mapa de ambiente HDR é feita assincronamente em loadTextures
     
-    // Shader para criar um gradiente de céu
-    const vertexShader = `
-        varying vec3 vWorldPosition;
-        
-        void main() {
-            vec4 worldPosition = modelMatrix * vec4(position, 1.0);
-            vWorldPosition = worldPosition.xyz;
-            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-    `;
+    // Criar uma esfera grande para o skybox (usado principalmente para o fallback)
+    const geometry = new THREE.SphereGeometry(500, 60, 40);
+    // Inverter a geometria para que a textura apareça do lado de dentro
+    geometry.scale(-1, 1, 1);
     
-    const fragmentShader = `
-        uniform vec3 topColor;
-        uniform vec3 bottomColor;
-        
-        varying vec3 vWorldPosition;
-        
-        void main() {
-            float h = normalize(vWorldPosition).y;
-            float t = max(0.0, min(1.0, (h + 1.0) / 2.0));
-            gl_FragColor = vec4(mix(bottomColor, topColor, t), 1.0);
-        }
-    `;
-    
-    const uniforms = {
-        topColor: { value: new THREE.Color(0x001133) },
-        bottomColor: { value: new THREE.Color(0x001e3c) }
-    };
-    
-    const material = new THREE.ShaderMaterial({
-        uniforms: uniforms,
-        vertexShader: vertexShader,
-        fragmentShader: fragmentShader,
-        side: THREE.BackSide
+    // Criar um material que vai receber o envMap depois
+    const material = new THREE.MeshBasicMaterial({
+        side: THREE.BackSide,
+        envMap: textures.envMap // Usar o cubemap padrão como fallback
     });
     
     skybox = new THREE.Mesh(geometry, material);
     scene.add(skybox);
+    
+    // Carregar o arquivo HDR separadamente
+    const rgbeLoader = new RGBELoader();
+    rgbeLoader.load(textures.hdrPath, function(texture) {
+        const pmremGenerator = new PMREMGenerator(renderer);
+        pmremGenerator.compileEquirectangularShader();
+        
+        const envMap = pmremGenerator.fromEquirectangular(texture).texture;
+        
+        // Aplicar ao background da cena
+        scene.background = envMap;
+        
+        // Aplicar ao skybox
+        skybox.material.envMap = envMap;
+        skybox.material.needsUpdate = true;
+        
+        // Aplicar ao oceano para reflexos realistas
+        if (ocean && ocean.material && ocean.material.uniforms && ocean.material.uniforms.envMap) {
+            ocean.material.uniforms.envMap.value = envMap;
+        }
+        
+        // Liberar recursos
+        texture.dispose();
+        pmremGenerator.dispose();
+        
+        console.log("Skybox HDR carregado e aplicado com sucesso");
+    });
 }
 
 function createOcean(textures) {
@@ -634,25 +637,59 @@ function animateSeaPlants() {
 
 // Carregar texturas necessárias logo após a inicialização
 function loadTextures() {
-    // Criar carregador de cubemap para reflexos
+    // Criar carregador de HDR para o skybox
+    const rgbeLoader = new RGBELoader();
+    let envMap = null;
+    
+    // Carregar o HDR de forma síncrona (para manter a API consistente)
+    rgbeLoader.load('textures/skybox/kloofendal_48d_partly_cloudy_puresky_2k.hdr', function(texture) {
+        // Criar ambiente PMREM para iluminação baseada em imagem
+        const pmremGenerator = new PMREMGenerator(renderer);
+        pmremGenerator.compileEquirectangularShader();
+        
+        envMap = pmremGenerator.fromEquirectangular(texture).texture;
+        
+        // Aplicar ao background da cena
+        scene.background = envMap;
+        
+        // Aplicar ao skybox se já criado
+        if (skybox && skybox.material) {
+            skybox.material.envMap = envMap;
+            skybox.material.needsUpdate = true;
+        }
+        
+        // Aplicar ao oceano para reflexos
+        if (ocean && ocean.material && ocean.material.uniforms && ocean.material.uniforms.envMap) {
+            ocean.material.uniforms.envMap.value = envMap;
+        }
+        
+        console.log("HDR Skybox carregado com sucesso");
+        
+        // Liberar recursos
+        texture.dispose();
+        pmremGenerator.dispose();
+    });
+    
+    // Criar carregador de cubemap como fallback
     const cubeTextureLoader = new THREE.CubeTextureLoader();
     const environmentMap = cubeTextureLoader.load(cubeMapUrls);
     environmentMap.encoding = THREE.sRGBEncoding;
     
     return {
+        hdrPath: 'textures/skybox/kloofendal_48d_partly_cloudy_puresky_2k.hdr',
         waterNormal: textureLoader.load('https://threejs.org/examples/textures/waternormals.jpg', texture => {
             texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-            texture.repeat.set(8, 8); // Repetir mais vezes para detalhes menores
+            texture.repeat.set(8, 8);
         }),
         waterDetail: textureLoader.load('https://threejs.org/examples/textures/Water_1_M_Normal.jpg', texture => {
             texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-            texture.repeat.set(16, 16); // Repetição alta para detalhes minúsculos
+            texture.repeat.set(16, 16);
         }),
         caustics: textureLoader.load('https://threejs.org/examples/textures/caustics.jpg', texture => {
             texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
             texture.repeat.set(8, 8);
         }),
-        envMap: environmentMap,
+        envMap: environmentMap, // Manter como fallback
         sand: textureLoader.load('https://threejs.org/examples/textures/terrain/grasslight-big.jpg', texture => {
             texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
             texture.repeat.set(5, 5);
