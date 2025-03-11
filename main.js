@@ -10,21 +10,8 @@ let kayak, paddleLeft, paddleRight;
 let clock = new THREE.Clock();
 let velocity = new THREE.Vector3();
 let waveUniforms = { uTime: { value: 0 } };
-let isAudioPlaying = false;
-let terrain = [];
-let textureLoader = new THREE.TextureLoader();
-let worldSize = 200;
-let chunkSize = 50;
-let chunksVisible = 5;
-let worldSeed = Math.random() * 10000;
-let cubeMapUrls = [
-    'https://threejs.org/examples/textures/cube/skybox/px.jpg', // right
-    'https://threejs.org/examples/textures/cube/skybox/nx.jpg', // left
-    'https://threejs.org/examples/textures/cube/skybox/py.jpg', // top
-    'https://threejs.org/examples/textures/cube/skybox/ny.jpg', // bottom
-    'https://threejs.org/examples/textures/cube/skybox/pz.jpg', // front
-    'https://threejs.org/examples/textures/cube/skybox/nz.jpg'  // back
-];
+let player; // Boneco do jogador
+let lighthouse; // Farol
 
 // Controles do jogador
 const keys = { w: false, a: false, s: false, d: false, shift: false };
@@ -35,7 +22,6 @@ const params = {
     maxSpeed: 0.05,
     waveHeight: 0.2,
     waveFrequency: 2.0,
-    waveSpeed: 2.0,
     fogDensity: 0.02
 };
 
@@ -52,20 +38,12 @@ function init() {
     
     // Configurar câmera
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.set(0, 5, 10);
+    camera.position.set(0, 2, 5);
     
-    // Configurar renderizador com melhorias
-    renderer = new THREE.WebGLRenderer({ 
-        antialias: true,
-        logarithmicDepthBuffer: true,
-        precision: 'highp'
-    });
+    // Configurar renderizador
+    renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.2;
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     document.body.appendChild(renderer.domElement);
     
     // Adicionar controles para depuração
@@ -74,33 +52,21 @@ function init() {
     controls.dampingFactor = 0.05;
     controls.enablePan = false;
     
-    // Luzes com melhorias
-    const ambientLight = new THREE.AmbientLight(0x404040);
+    // Luzes
+    const ambientLight = new THREE.AmbientLight(0x404040, 0.5);
     scene.add(ambientLight);
     
     const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
-    directionalLight.position.set(50, 50, -20);
-    directionalLight.castShadow = true;
-    directionalLight.shadow.mapSize.width = 2048;
-    directionalLight.shadow.mapSize.height = 2048;
-    directionalLight.shadow.camera.near = 0.5;
-    directionalLight.shadow.camera.far = 500;
-    directionalLight.shadow.camera.left = -100;
-    directionalLight.shadow.camera.right = 100;
-    directionalLight.shadow.camera.top = 100;
-    directionalLight.shadow.camera.bottom = -100;
+    directionalLight.position.set(50, 50, 10);
     scene.add(directionalLight);
     
-    // Carregar texturas e recursos
+    // Carregar texturas - apenas o HDR
     const textures = loadTextures();
     
-    // Criar elementos do jogo com as novas texturas
+    // Criar elementos do jogo
     createSkybox(textures);
-    createOcean(textures);
+    createOcean();
     createKayak();
-    
-    // Gerar mundo procedural
-    generateProceduralWorld(textures);
     
     // Capturar entrada do teclado
     setupKeyboardControls();
@@ -111,29 +77,43 @@ function init() {
     // Esconder a tela de carregamento manualmente
     document.getElementById('loading').style.display = 'none';
     
+    // Adicionar farol em posição aleatória
+    lighthouse = createLighthouse();
+    
+    // Gerar posição aleatória (entre -50 e 50, mas não muito perto do ponto inicial)
+    let lighthouseX, lighthouseZ;
+    do {
+        lighthouseX = (Math.random() * 100) - 50;
+        lighthouseZ = (Math.random() * 100) - 50;
+    } while (Math.sqrt(lighthouseX * lighthouseX + lighthouseZ * lighthouseZ) < 20);
+    
+    lighthouse.position.set(lighthouseX, 0, lighthouseZ);
+    scene.add(lighthouse);
+    
     // Iniciar animação
     animate();
 }
 
+function loadTextures() {
+    return {
+        hdrPath: 'textures/skybox/kloofendal_48d_partly_cloudy_puresky_2k.hdr'
+    };
+}
+
 function createSkybox(textures) {
-    // Usar o arquivo HDR diretamente como background da cena
-    // A criação do mapa de ambiente HDR é feita assincronamente em loadTextures
-    
-    // Criar uma esfera grande para o skybox (usado principalmente para o fallback)
+    // Criar uma esfera grande para o skybox
     const geometry = new THREE.SphereGeometry(500, 60, 40);
-    // Inverter a geometria para que a textura apareça do lado de dentro
-    geometry.scale(-1, 1, 1);
+    geometry.scale(-1, 1, 1); // Virar a esfera ao contrário
     
-    // Criar um material que vai receber o envMap depois
+    // Material básico
     const material = new THREE.MeshBasicMaterial({
-        side: THREE.BackSide,
-        envMap: textures.envMap // Usar o cubemap padrão como fallback
+        side: THREE.BackSide
     });
     
     skybox = new THREE.Mesh(geometry, material);
     scene.add(skybox);
     
-    // Carregar o arquivo HDR separadamente
+    // Carregar o arquivo HDR
     const rgbeLoader = new RGBELoader();
     rgbeLoader.load(textures.hdrPath, function(texture) {
         const pmremGenerator = new PMREMGenerator(renderer);
@@ -148,37 +128,27 @@ function createSkybox(textures) {
         skybox.material.envMap = envMap;
         skybox.material.needsUpdate = true;
         
-        // Aplicar ao oceano para reflexos realistas
-        if (ocean && ocean.material && ocean.material.uniforms && ocean.material.uniforms.envMap) {
-            ocean.material.uniforms.envMap.value = envMap;
-        }
-        
         // Liberar recursos
         texture.dispose();
         pmremGenerator.dispose();
         
-        console.log("Skybox HDR carregado e aplicado com sucesso");
+        console.log("Skybox HDR carregado com sucesso");
     });
 }
 
-function createOcean(textures) {
-    // Criar geometria do oceano (maior para mundo procedural)
-    const geometry = new THREE.PlaneGeometry(worldSize, worldSize, 200, 200);
+function createOcean() {
+    // Criar geometria do oceano
+    const geometry = new THREE.PlaneGeometry(200, 200, 100, 100);
     
-    // Shader mais avançado para animação das ondas com reflexos
+    // Shader para animação das ondas
     const vertexShader = `
         uniform float uTime;
         varying vec2 vUv;
         varying vec3 vPosition;
-        varying vec3 vNormal;
-        varying vec3 vWorldPosition;
-        varying vec3 vViewDirection;
-        varying float vDepth;
         
         void main() {
             vUv = uv;
             vPosition = position;
-            vNormal = normalize(normal);
             
             float waveHeight = 0.2;
             float waveSpeed = 1.5;
@@ -188,126 +158,38 @@ function createOcean(textures) {
             float wave1 = sin(position.x * frequency + uTime * waveSpeed) * waveHeight;
             float wave2 = cos(position.y * frequency + uTime * waveSpeed * 0.8) * waveHeight;
             
-            // Ondas secundárias para mais detalhes
-            float wave3 = sin(position.x * frequency * 2.0 + uTime * waveSpeed * 1.3) * waveHeight * 0.3;
-            float wave4 = cos(position.y * frequency * 2.5 + uTime * waveSpeed) * waveHeight * 0.2;
-            
-            // Ondas terciárias para detalhes finos
-            float wave5 = sin(position.x * frequency * 5.0 + uTime * waveSpeed * 0.7) * waveHeight * 0.1;
-            float wave6 = cos(position.y * frequency * 4.0 + uTime * waveSpeed * 1.1) * waveHeight * 0.15;
-            
             // Combinar ondas
-            float totalWave = wave1 + wave2 + wave3 + wave4 + wave5 + wave6;
+            float totalWave = wave1 + wave2;
             
             // Aplicar deslocamento
             vec3 newPosition = position;
             newPosition.z += totalWave;
             
-            // Calcular posição no espaço de mundo
-            vec4 worldPosition = modelMatrix * vec4(newPosition, 1.0);
-            vWorldPosition = worldPosition.xyz;
-            
-            // Calcular direção de visualização
-            vViewDirection = normalize(cameraPosition - worldPosition.xyz);
-            
-            // Calcular profundidade para transparência
-            vDepth = clamp(length(worldPosition.xyz - cameraPosition) / 100.0, 0.0, 1.0);
-            
-            gl_Position = projectionMatrix * viewMatrix * worldPosition;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(newPosition, 1.0);
         }
     `;
     
     const fragmentShader = `
-        uniform float uTime;
-        uniform samplerCube envMap;
-        uniform sampler2D normalMap;
-        uniform sampler2D detailMap;
-        uniform sampler2D causticsMap;
-        uniform vec3 sunColor;
-        uniform vec3 sunDirection;
-        uniform vec3 waterColor;
-        uniform vec3 deepWaterColor;
-        uniform vec3 skyColor;
-        
         varying vec2 vUv;
-        varying vec3 vPosition;
-        varying vec3 vNormal;
-        varying vec3 vWorldPosition;
-        varying vec3 vViewDirection;
-        varying float vDepth;
-        
-        // Funções auxiliares
-        float fresnel(vec3 viewDirection, vec3 normal) {
-            return pow(1.0 - max(0.0, dot(viewDirection, normal)), 4.0);
-        }
         
         void main() {
-            // Shift UVs com base no tempo para efeito de movimento
-            vec2 uvTimeShift1 = vUv + vec2(-0.02, 0.03) * uTime * 0.2;
-            vec2 uvTimeShift2 = vUv + vec2(0.04, -0.01) * uTime * 0.3;
+            // Cores do oceano
+            vec3 shallowColor = vec3(0.0, 0.6, 0.8);
+            vec3 deepColor = vec3(0.0, 0.2, 0.5);
             
-            // Aplicar normal maps para detalhes
-            vec3 normalFromMap1 = texture2D(normalMap, uvTimeShift1).rgb * 2.0 - 1.0;
-            vec3 normalFromMap2 = texture2D(detailMap, uvTimeShift2).rgb * 2.0 - 1.0;
+            // Profundidade com base na posição
+            float depth = clamp(vUv.y, 0.0, 1.0);
             
-            // Combinar normal maps com diferentes intensidades
-            vec3 combinedNormal = normalize(normalFromMap1 * 0.5 + normalFromMap2 * 0.3);
+            // Misturar cores com base na profundidade
+            vec3 finalColor = mix(shallowColor, deepColor, depth);
             
-            // Combinar com a normal base da geometria
-            vec3 normal = normalize(vNormal + combinedNormal * 0.4);
-            
-            // Efeito Fresnel - aumenta reflexões em ângulos rasos
-            float fresnelTerm = fresnel(vViewDirection, normal);
-            
-            // Calcular direção de reflexão
-            vec3 reflectedDir = reflect(-vViewDirection, normal);
-            
-            // Amostra do mapa de ambiente para reflexões
-            vec3 reflectedColor = textureCube(envMap, reflectedDir).rgb;
-            
-            // Ajustar cor de profundidade
-            vec3 baseWaterColor = mix(waterColor, deepWaterColor, vDepth);
-            
-            // Efeito caustics (padrões de luz subaquática)
-            vec2 causticsUV = vWorldPosition.xz * 0.05 + uTime * 0.05;
-            vec3 caustics = texture2D(causticsMap, causticsUV).rgb * 0.3;
-            
-            // Aplicar caustics apenas em áreas mais rasas
-            caustics *= (1.0 - vDepth) * 0.5;
-            
-            // Especular do sol
-            float sunSpec = pow(max(0.0, dot(reflectedDir, normalize(sunDirection))), 256.0) * 0.8;
-            vec3 sunSpecular = sunColor * sunSpec;
-            
-            // Combinar cores finais
-            vec3 finalColor = mix(baseWaterColor, reflectedColor, fresnelTerm * 0.7);
-            
-            // Adicionar efeitos extra
-            finalColor += sunSpecular;
-            finalColor += caustics;
-            
-            // Ajustar saturação baseada na profundidade
-            finalColor = mix(finalColor, vec3(length(finalColor) * 0.33), vDepth * 0.2);
-            
-            // Transparência variável baseada na profundidade
-            float alpha = mix(0.7, 0.95, vDepth);
-            
-            gl_FragColor = vec4(finalColor, alpha);
+            gl_FragColor = vec4(finalColor, 0.8);
         }
     `;
     
     const material = new THREE.ShaderMaterial({
-        uniforms: { 
-            uTime: { value: 0.0 },
-            envMap: { value: textures.envMap },
-            normalMap: { value: textures.waterNormal },
-            detailMap: { value: textures.waterDetail },
-            causticsMap: { value: textures.caustics },
-            sunColor: { value: new THREE.Color(1.0, 0.95, 0.8) },
-            sunDirection: { value: new THREE.Vector3(0.5, 0.7, 0.5).normalize() },
-            waterColor: { value: new THREE.Color(0.0, 0.35, 0.5) },
-            deepWaterColor: { value: new THREE.Color(0.0, 0.15, 0.35) },
-            skyColor: { value: new THREE.Color(0.0, 0.1, 0.3) }
+        uniforms: {
+            uTime: { value: 0.0 }
         },
         vertexShader: vertexShader,
         fragmentShader: fragmentShader,
@@ -317,234 +199,367 @@ function createOcean(textures) {
     
     ocean = new THREE.Mesh(geometry, material);
     ocean.rotation.x = -Math.PI / 2;
-    ocean.receiveShadow = true;
+    ocean.position.y = 0;
     scene.add(ocean);
     
-    console.log("Oceano realista criado com reflexos, normal maps e transparência");
+    console.log("Oceano básico criado com sucesso");
 }
 
 function createKayak() {
     // Criar grupo para o caiaque
     kayak = new THREE.Group();
     
-    // Corpo do caiaque (mais realista)
-    const bodyGeometry = new THREE.BoxGeometry(0.8, 0.3, 2.5);
-    bodyGeometry.scale(1, 0.5, 1); // Achatado para parecer mais com um caiaque
+    // Corpo do caiaque
+    const bodyGeometry = new THREE.CapsuleGeometry(0.3, 1.5, 8, 16);
+    bodyGeometry.rotateZ(Math.PI / 2);
     
-    // Material com textura para o caiaque
-    const bodyMaterial = new THREE.MeshStandardMaterial({
-        color: 0xf57c36, // Laranja
-        roughness: 0.6,
-        metalness: 0.1
+    // Achatamento do caiaque
+    const bodyVertices = bodyGeometry.attributes.position;
+    for (let i = 0; i < bodyVertices.count; i++) {
+        bodyVertices.setY(i, bodyVertices.getY(i) * 0.4);
+    }
+    
+    bodyGeometry.computeVertexNormals();
+    
+    const bodyMaterial = new THREE.MeshPhongMaterial({
+        color: 0xFF4500,
+        shininess: 80
     });
     
     const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-    body.position.y = 0.1; // Altura do caiaque acima da água
+    body.position.y = 0.2;
     kayak.add(body);
     
-    // Criar o remador (pessoa simples)
-    const paddlerGroup = new THREE.Group();
-    paddlerGroup.position.set(0, 0.3, -0.2);
-    kayak.add(paddlerGroup);
+    // Assento do caiaque
+    const seatGeometry = new THREE.BoxGeometry(0.4, 0.1, 0.4);
+    const seatMaterial = new THREE.MeshPhongMaterial({
+        color: 0x333333
+    });
     
-    // Criar pessoa estilizada
-    // Torso
-    const torsoGeometry = new THREE.BoxGeometry(0.4, 0.4, 0.3);
-    const torsoMaterial = new THREE.MeshStandardMaterial({ color: 0x2c3e50 }); // Cor da roupa
-    const torso = new THREE.Mesh(torsoGeometry, torsoMaterial);
-    torso.position.y = 0.3;
-    paddlerGroup.add(torso);
+    const seat = new THREE.Mesh(seatGeometry, seatMaterial);
+    seat.position.y = 0.3;
+    kayak.add(seat);
     
-    // Cabeça
-    const headGeometry = new THREE.SphereGeometry(0.15, 16, 16);
-    const headMaterial = new THREE.MeshStandardMaterial({ color: 0xe0ac69 }); // Cor da pele
-    const head = new THREE.Mesh(headGeometry, headMaterial);
-    head.position.y = 0.6;
-    paddlerGroup.add(head);
-    
-    // Braços
-    const armGeometry = new THREE.CylinderGeometry(0.05, 0.05, 0.5);
-    const armMaterial = new THREE.MeshStandardMaterial({ color: 0x2c3e50 });
-    
-    const leftArm = new THREE.Mesh(armGeometry, armMaterial);
-    leftArm.rotation.z = Math.PI / 3;
-    leftArm.position.set(-0.3, 0.3, 0);
-    paddlerGroup.add(leftArm);
-    
-    const rightArm = new THREE.Mesh(armGeometry, armMaterial);
-    rightArm.rotation.z = -Math.PI / 3;
-    rightArm.position.set(0.3, 0.3, 0);
-    paddlerGroup.add(rightArm);
-    
-    // Remos
-    const paddleGeometry = new THREE.BoxGeometry(0.1, 0.01, 1.2);
-    const bladeGeometry = new THREE.BoxGeometry(0.2, 0.01, 0.3);
-    const paddleMaterial = new THREE.MeshStandardMaterial({ color: 0x5d4037 }); // Marrom
-    
-    // Remo esquerdo
-    paddleLeft = new THREE.Group();
-    const paddleLeftHandle = new THREE.Mesh(paddleGeometry, paddleMaterial);
-    const paddleLeftBlade = new THREE.Mesh(bladeGeometry, paddleMaterial);
-    paddleLeftBlade.position.z = 0.6;
-    paddleLeft.add(paddleLeftHandle);
-    paddleLeft.add(paddleLeftBlade);
-    paddleLeft.position.set(-0.6, 0.3, 0);
+    // Criar remos
+    paddleLeft = createPaddle();
+    paddleLeft.position.set(-0.4, 0.3, 0);
     paddleLeft.rotation.x = Math.PI / 4;
-    paddlerGroup.add(paddleLeft);
+    kayak.add(paddleLeft);
     
-    // Remo direito
-    paddleRight = new THREE.Group();
-    const paddleRightHandle = new THREE.Mesh(paddleGeometry, paddleMaterial);
-    const paddleRightBlade = new THREE.Mesh(bladeGeometry, paddleMaterial);
-    paddleRightBlade.position.z = 0.6;
-    paddleRight.add(paddleRightHandle);
-    paddleRight.add(paddleRightBlade);
-    paddleRight.position.set(0.6, 0.3, 0);
+    paddleRight = createPaddle();
+    paddleRight.position.set(0.4, 0.3, 0);
     paddleRight.rotation.x = Math.PI / 4;
-    paddlerGroup.add(paddleRight);
+    kayak.add(paddleRight);
     
-    // Configurações iniciais do caiaque
-    kayak.position.y = 0; // Será ajustado pela altura das ondas
+    // Adicionar o boneco do jogador
+    player = createPlayer();
+    player.position.set(0, 0.4, 0);
+    kayak.add(player);
+    
+    // Garantir que o kayak esteja reto
+    kayak.rotation.set(0, 0, 0);
+    
+    // Adicionar caiaque à cena
     scene.add(kayak);
 }
 
-function setupKeyboardControls() {
-    document.addEventListener('keydown', (e) => {
-        if (e.key.toLowerCase() in keys) {
-            keys[e.key.toLowerCase()] = true;
-        }
-        if (e.key === 'Shift') {
-            keys.shift = true;
-        }
+function createPaddle() {
+    const paddleGroup = new THREE.Group();
+    
+    // Cabo do remo
+    const shaftGeometry = new THREE.CylinderGeometry(0.015, 0.015, 1.2, 8);
+    const shaftMaterial = new THREE.MeshPhongMaterial({
+        color: 0x8B4513
     });
     
-    document.addEventListener('keyup', (e) => {
-        if (e.key.toLowerCase() in keys) {
-            keys[e.key.toLowerCase()] = false;
-        }
-        if (e.key === 'Shift') {
-            keys.shift = false;
-        }
+    const shaft = new THREE.Mesh(shaftGeometry, shaftMaterial);
+    shaft.position.y = 0.6;
+    paddleGroup.add(shaft);
+    
+    // Pá do remo
+    const bladeGeometry = new THREE.BoxGeometry(0.15, 0.01, 0.4);
+    const bladeMaterial = new THREE.MeshPhongMaterial({
+        color: 0x1E90FF
+    });
+    
+    const blade = new THREE.Mesh(bladeGeometry, bladeMaterial);
+    blade.position.y = 1.2;
+    paddleGroup.add(blade);
+    
+    return paddleGroup;
+}
+
+function createPlayer() {
+    const playerGroup = new THREE.Group();
+    
+    // Cores
+    const skinColor = 0xF5D0A9;
+    const shirtColor = 0x3498DB;
+    const pantsColor = 0x2C3E50;
+    const hairColor = 0x3B240B;
+    
+    // Corpo (torso)
+    const torsoGeometry = new THREE.BoxGeometry(0.3, 0.4, 0.2);
+    const torsoMaterial = new THREE.MeshPhongMaterial({ color: shirtColor });
+    const torso = new THREE.Mesh(torsoGeometry, torsoMaterial);
+    torso.position.y = 0.5;
+    playerGroup.add(torso);
+    
+    // Cabeça
+    const headGeometry = new THREE.SphereGeometry(0.15, 16, 16);
+    const headMaterial = new THREE.MeshPhongMaterial({ color: skinColor });
+    const head = new THREE.Mesh(headGeometry, headMaterial);
+    head.position.y = 0.85;
+    playerGroup.add(head);
+    
+    // Cabelo
+    const hairGeometry = new THREE.SphereGeometry(0.16, 16, 16, 0, Math.PI * 2, 0, Math.PI / 2);
+    const hairMaterial = new THREE.MeshPhongMaterial({ color: hairColor });
+    const hair = new THREE.Mesh(hairGeometry, hairMaterial);
+    hair.position.y = 0.88;
+    hair.scale.y = 0.7;
+    playerGroup.add(hair);
+    
+    // Pernas
+    const legGeometry = new THREE.BoxGeometry(0.12, 0.3, 0.12);
+    const legMaterial = new THREE.MeshPhongMaterial({ color: pantsColor });
+    
+    const leftLeg = new THREE.Mesh(legGeometry, legMaterial);
+    leftLeg.position.set(-0.08, 0.15, 0);
+    playerGroup.add(leftLeg);
+    
+    const rightLeg = new THREE.Mesh(legGeometry, legMaterial);
+    rightLeg.position.set(0.08, 0.15, 0);
+    playerGroup.add(rightLeg);
+    
+    // Braços
+    const armGeometry = new THREE.BoxGeometry(0.08, 0.3, 0.08);
+    const armMaterial = new THREE.MeshPhongMaterial({ color: shirtColor });
+    
+    const leftArm = new THREE.Mesh(armGeometry, armMaterial);
+    leftArm.position.set(-0.2, 0.5, 0);
+    leftArm.rotation.z = Math.PI / 6; // Inclinação para remada
+    playerGroup.add(leftArm);
+    
+    const rightArm = new THREE.Mesh(armGeometry, armMaterial);
+    rightArm.position.set(0.2, 0.5, 0);
+    rightArm.rotation.z = -Math.PI / 6; // Inclinação para remada
+    playerGroup.add(rightArm);
+    
+    // Face (olhos e boca simples)
+    const eyeGeometry = new THREE.SphereGeometry(0.03, 8, 8);
+    const eyeMaterial = new THREE.MeshPhongMaterial({ color: 0x000000 });
+    
+    const leftEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
+    leftEye.position.set(-0.07, 0.88, 0.13);
+    playerGroup.add(leftEye);
+    
+    const rightEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
+    rightEye.position.set(0.07, 0.88, 0.13);
+    playerGroup.add(rightEye);
+    
+    // Boca
+    const mouthGeometry = new THREE.BoxGeometry(0.08, 0.02, 0.01);
+    const mouthMaterial = new THREE.MeshPhongMaterial({ color: 0xE74C3C });
+    const mouth = new THREE.Mesh(mouthGeometry, mouthMaterial);
+    mouth.position.set(0, 0.8, 0.15);
+    playerGroup.add(mouth);
+    
+    return playerGroup;
+}
+
+function createLighthouse() {
+    const lighthouseGroup = new THREE.Group();
+    
+    // Base circular elevada
+    const baseGeometry = new THREE.CylinderGeometry(5, 6, 3, 8, 1);
+    const baseMaterial = new THREE.MeshPhongMaterial({ color: 0x95a5a6 });
+    const base = new THREE.Mesh(baseGeometry, baseMaterial);
+    base.position.y = 1.5;
+    lighthouseGroup.add(base);
+    
+    // Torre principal
+    const towerGeometry = new THREE.CylinderGeometry(3, 4, 15, 8, 3);
+    const towerMaterial = new THREE.MeshPhongMaterial({ color: 0xf5f5f5 });
+    const tower = new THREE.Mesh(towerGeometry, towerMaterial);
+    tower.position.y = 10.5;
+    lighthouseGroup.add(tower);
+    
+    // Listras vermelhas na torre
+    const stripeGeometry = new THREE.CylinderGeometry(3.01, 3.01, 3, 8, 1);
+    const stripeMaterial = new THREE.MeshPhongMaterial({ color: 0xe74c3c });
+    
+    for (let i = 0; i < 3; i++) {
+        const stripe = new THREE.Mesh(stripeGeometry, stripeMaterial);
+        stripe.position.y = 7 + (i * 5);
+        lighthouseGroup.add(stripe);
+    }
+    
+    // Casa do faroleiro
+    const houseGeometry = new THREE.BoxGeometry(6, 4, 6);
+    const houseMaterial = new THREE.MeshPhongMaterial({ color: 0xd35400 });
+    const house = new THREE.Mesh(houseGeometry, houseMaterial);
+    house.position.set(0, 4, 5);
+    lighthouseGroup.add(house);
+    
+    // Telhado da casa
+    const roofGeometry = new THREE.ConeGeometry(4.5, 3, 4);
+    const roofMaterial = new THREE.MeshPhongMaterial({ color: 0x7f8c8d });
+    const roof = new THREE.Mesh(roofGeometry, roofMaterial);
+    roof.position.set(0, 7.5, 5);
+    roof.rotation.y = Math.PI / 4;
+    lighthouseGroup.add(roof);
+    
+    // Lanterna (topo do farol)
+    const lanternGeometry = new THREE.CylinderGeometry(3.5, 3.5, 3, 8, 1);
+    const lanternMaterial = new THREE.MeshPhongMaterial({ 
+        color: 0x2980b9,
+        transparent: true,
+        opacity: 0.7
+    });
+    const lantern = new THREE.Mesh(lanternGeometry, lanternMaterial);
+    lantern.position.y = 19.5;
+    lighthouseGroup.add(lantern);
+    
+    // Topo do farol
+    const topGeometry = new THREE.ConeGeometry(3, 2, 8);
+    const topMaterial = new THREE.MeshPhongMaterial({ color: 0x34495e });
+    const top = new THREE.Mesh(topGeometry, topMaterial);
+    top.position.y = 22;
+    lighthouseGroup.add(top);
+    
+    // Luz do farol
+    const light = new THREE.PointLight(0xffffcc, 2, 100);
+    light.position.set(0, 19.5, 0);
+    lighthouseGroup.add(light);
+    
+    // Refletor direcional que gira
+    const spotLight = new THREE.SpotLight(0xffffcc, 3, 200, Math.PI / 12, 0.5, 1);
+    spotLight.position.set(0, 19.5, 0);
+    lighthouseGroup.add(spotLight);
+    spotLight.target.position.set(50, 0, 0);
+    lighthouseGroup.add(spotLight.target);
+    
+    // Escalar para baixo o modelo do farol (era muito grande)
+    lighthouseGroup.scale.set(0.2, 0.2, 0.2);
+    
+    return lighthouseGroup;
+}
+
+function setupKeyboardControls() {
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'w' || event.key === 'W' || event.key === 'ArrowUp') keys.w = true;
+        if (event.key === 'a' || event.key === 'A' || event.key === 'ArrowLeft') keys.a = true;
+        if (event.key === 's' || event.key === 'S' || event.key === 'ArrowDown') keys.s = true;
+        if (event.key === 'd' || event.key === 'D' || event.key === 'ArrowRight') keys.d = true;
+        if (event.key === 'Shift') keys.shift = true;
+    });
+    
+    document.addEventListener('keyup', (event) => {
+        if (event.key === 'w' || event.key === 'W' || event.key === 'ArrowUp') keys.w = false;
+        if (event.key === 'a' || event.key === 'A' || event.key === 'ArrowLeft') keys.a = false;
+        if (event.key === 's' || event.key === 'S' || event.key === 'ArrowDown') keys.s = false;
+        if (event.key === 'd' || event.key === 'D' || event.key === 'ArrowRight') keys.d = false;
+        if (event.key === 'Shift') keys.shift = false;
     });
 }
 
 function updateKayakMovement() {
-    // Calcular aceleração com base no boost de Shift
-    const currentAcceleration = params.acceleration * (keys.shift ? 2.5 : 1.0);
-    const currentMaxSpeed = params.maxSpeed * (keys.shift ? 1.5 : 1.0);
+    // Calcular a altura da onda na posição atual do caiaque
+    const waveHeight = getWaveHeight(kayak.position.x, kayak.position.z);
     
-    // Controle direcional
+    // Ajustar a altura do caiaque com base nas ondas
+    kayak.position.y = waveHeight + 0.2;
+    
+    // Calcular inclinação baseada nas ondas
+    const waveGradientX = (getWaveHeight(kayak.position.x + 0.1, kayak.position.z) - waveHeight) / 0.1;
+    const waveGradientZ = (getWaveHeight(kayak.position.x, kayak.position.z + 0.1) - waveHeight) / 0.1;
+    
+    // Ajustar rotação do caiaque com as ondas
+    kayak.rotation.x = -waveGradientZ * 0.5;
+    kayak.rotation.z = waveGradientX * 0.5;
+    
+    // Aceleração baseada em teclas
+    const speedMultiplier = keys.shift ? 2.0 : 1.0;
+    const acc = params.acceleration * speedMultiplier;
+    
+    // Movimento para frente/trás
     if (keys.w) {
-        velocity.z -= Math.cos(kayak.rotation.y) * currentAcceleration;
-        velocity.x -= Math.sin(kayak.rotation.y) * currentAcceleration;
+        velocity.z -= Math.cos(kayak.rotation.y) * acc;
+        velocity.x -= Math.sin(kayak.rotation.y) * acc;
+        animatePaddling();
+    } else if (keys.s) {
+        velocity.z += Math.cos(kayak.rotation.y) * acc * 0.5;
+        velocity.x += Math.sin(kayak.rotation.y) * acc * 0.5;
+        animatePaddling();
     }
-    if (keys.s) {
-        velocity.z += Math.cos(kayak.rotation.y) * currentAcceleration * 0.5; // Mover para trás é mais lento
-        velocity.x += Math.sin(kayak.rotation.y) * currentAcceleration * 0.5;
-    }
+    
+    // Rotação
     if (keys.a) {
         kayak.rotation.y += params.turnSpeed;
-    }
-    if (keys.d) {
+    } else if (keys.d) {
         kayak.rotation.y -= params.turnSpeed;
     }
     
-    // Limitar velocidade máxima
-    const speed = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
-    if (speed > currentMaxSpeed) {
-        velocity.x = (velocity.x / speed) * currentMaxSpeed;
-        velocity.z = (velocity.z / speed) * currentMaxSpeed;
-    }
-    
     // Aplicar amortecimento
-    velocity.multiplyScalar(params.damping);
+    velocity.x *= params.damping;
+    velocity.z *= params.damping;
+    
+    // Limitar velocidade máxima
+    const currentSpeed = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
+    if (currentSpeed > params.maxSpeed) {
+        velocity.x = (velocity.x / currentSpeed) * params.maxSpeed;
+        velocity.z = (velocity.z / currentSpeed) * params.maxSpeed;
+    }
     
     // Atualizar posição
     kayak.position.x += velocity.x;
     kayak.position.z += velocity.z;
-    
-    // Animar remos quando se movendo
-    animatePaddles(speed);
-    
-    // Obter altura da onda na posição do caiaque
-    kayak.position.y = getWaveHeight(kayak.position.x, kayak.position.z) + 0.1;
-    
-    // Inclinar o caiaque baseado nas ondas
-    const frontPos = new THREE.Vector3(
-        kayak.position.x + Math.sin(kayak.rotation.y),
-        0,
-        kayak.position.z + Math.cos(kayak.rotation.y)
-    );
-    const backPos = new THREE.Vector3(
-        kayak.position.x - Math.sin(kayak.rotation.y),
-        0,
-        kayak.position.z - Math.cos(kayak.rotation.y)
-    );
-    
-    const frontHeight = getWaveHeight(frontPos.x, frontPos.z);
-    const backHeight = getWaveHeight(backPos.x, backPos.z);
-    
-    // Inclinação frente/trás (pitch)
-    kayak.rotation.x = Math.atan2(frontHeight - backHeight, 2.0) * 0.5;
-    
-    // Inclinação laterais (roll)
-    const rightPos = new THREE.Vector3(
-        kayak.position.x + Math.cos(kayak.rotation.y),
-        0,
-        kayak.position.z - Math.sin(kayak.rotation.y)
-    );
-    const leftPos = new THREE.Vector3(
-        kayak.position.x - Math.cos(kayak.rotation.y),
-        0,
-        kayak.position.z + Math.sin(kayak.rotation.y)
-    );
-    
-    const rightHeight = getWaveHeight(rightPos.x, rightPos.z);
-    const leftHeight = getWaveHeight(leftPos.x, leftPos.z);
-    
-    kayak.rotation.z = Math.atan2(rightHeight - leftHeight, 1.0) * 0.5;
 }
 
-function getWaveHeight(x, z) {
-    const time = clock.getElapsedTime() * params.waveSpeed;
-    const height = params.waveHeight;
-    const freq = params.waveFrequency;
+function getWaveHeight(x, z, time = clock.getElapsedTime()) {
+    const waveSpeed = 1.5;
+    const frequency = 2.0;
+    const waveHeight = 0.2;
     
-    // Usar a mesma fórmula do shader para consistência
-    let wave1 = Math.sin(x * freq + time) * height;
-    let wave2 = Math.cos(z * freq + time) * height;
+    // Usar senos e cossenos para calcular a altura da onda
+    const wave1 = Math.sin(x * frequency + time * waveSpeed) * waveHeight;
+    const wave2 = Math.cos(z * frequency + time * waveSpeed * 0.8) * waveHeight;
     
     return wave1 + wave2;
 }
 
-function animatePaddles(speed) {
-    if (!paddleLeft || !paddleRight) return;
-    
+function animatePaddling() {
+    // Animação de remo simplificada
     const time = clock.getElapsedTime();
+    const cycle = Math.sin(time * 5.0);
+    const leftCycle = cycle;
+    const rightCycle = -cycle;
     
-    // Se estiver se movendo, animar os remos
-    if (speed > 0.005) {
-        // Alternar entre os remos
-        const paddlingRate = 3.0 + speed * 20; // Remadas mais rápidas com velocidade maior
-        
-        // Ciclo de remada
-        const leftCycle = Math.sin(time * paddlingRate);
-        const rightCycle = Math.sin(time * paddlingRate + Math.PI); // Defasado
-        
-        // Animação do remo esquerdo
-        paddleLeft.rotation.x = Math.PI / 4 + leftCycle * 0.5;
+    if (keys.w || keys.s) {
+        // Movimento de remada
+        paddleLeft.rotation.x = Math.PI / 4 + leftCycle * 0.3;
         paddleLeft.rotation.z = leftCycle * 0.2;
-        
-        // Animação do remo direito
-        paddleRight.rotation.x = Math.PI / 4 + rightCycle * 0.5;
+        paddleRight.rotation.x = Math.PI / 4 + rightCycle * 0.3;
         paddleRight.rotation.z = rightCycle * 0.2;
         
+        // Animar braços do jogador
+        if (player) {
+            player.children[5].rotation.z = Math.PI / 6 + leftCycle * 0.3; // Braço esquerdo
+            player.children[6].rotation.z = -Math.PI / 6 + rightCycle * 0.3; // Braço direito
+        }
     } else {
         // Posição de descanso
         paddleLeft.rotation.x = Math.PI / 4;
         paddleLeft.rotation.z = 0;
         paddleRight.rotation.x = Math.PI / 4;
         paddleRight.rotation.z = 0;
+        
+        // Posição de descanso para os braços
+        if (player) {
+            player.children[5].rotation.z = Math.PI / 6; // Braço esquerdo
+            player.children[6].rotation.z = -Math.PI / 6; // Braço direito
+        }
     }
 }
 
@@ -564,7 +579,7 @@ function updateCamera() {
     // Fazer a câmera olhar para o caiaque
     camera.lookAt(
         kayak.position.x,
-        kayak.position.y + 0.5, // Olhar um pouco acima do caiaque
+        kayak.position.y + 0.5,
         kayak.position.z
     );
 }
@@ -578,18 +593,9 @@ function onWindowResize() {
 function animate() {
     requestAnimationFrame(animate);
     
-    const time = clock.getElapsedTime();
-    
-    // Atualizar o tempo para o shader do oceano com efeitos dinâmicos
+    // Atualizar tempo para ondas
     if (ocean && ocean.material.uniforms) {
-        ocean.material.uniforms.uTime.value = time;
-        
-        // Atualizar direção do sol se houver ciclo dia/noite
-        // ocean.material.uniforms.sunDirection.value.set(
-        //    Math.sin(time * 0.05), 
-        //    Math.max(0.1, Math.sin(time * 0.05)), 
-        //    Math.cos(time * 0.05)
-        // ).normalize();
+        ocean.material.uniforms.uTime.value = clock.getElapsedTime();
     }
     
     // Atualizar controles
@@ -601,429 +607,28 @@ function animate() {
     // Atualizar câmera
     updateCamera();
     
-    // Atualizar mundo procedural quando necessário
-    if (Math.floor(time) % 2 === 0 && !window.lastWorldUpdate) {
-        updateVisibleChunks(loadTextures());
-        window.lastWorldUpdate = true;
-    } else if (Math.floor(time) % 2 === 1) {
-        window.lastWorldUpdate = false;
-    }
-    
-    // Animação das plantas subaquáticas
-    animateSeaPlants();
+    // Atualizar o farol
+    updateLighthouse();
     
     // Render
     renderer.render(scene, camera);
 }
 
-// Animar plantas subaquáticas
-function animateSeaPlants() {
-    const time = clock.getElapsedTime();
-    
-    for (let i = 0; i < terrain.length; i++) {
-        const chunk = terrain[i];
-        chunk.traverse(child => {
-            if (child.userData && child.userData.type === 'seaplant') {
-                // Movimento de ondulação suave
-                child.rotation.y = Math.sin(time * 0.5 + child.position.x) * 0.1;
-                
-                // Atualizar altura com as ondas
-                const waveHeight = getWaveHeight(child.position.x, child.position.z, time);
-                child.position.y = -1 + waveHeight;
-            }
-        });
+function updateLighthouse() {
+    if (lighthouse) {
+        // Girar o feixe de luz
+        const time = clock.getElapsedTime();
+        const spotLight = lighthouse.children[9]; // O spotlight é o décimo elemento no grupo
+        const target = lighthouse.children[10]; // O target é o décimo primeiro
+        
+        // Girar em torno do farol
+        const angle = time * 0.5;
+        const radius = 50;
+        target.position.x = Math.cos(angle) * radius;
+        target.position.z = Math.sin(angle) * radius;
+        
+        // Piscar a luz suavemente
+        const pulseIntensity = 2 + Math.sin(time * 2) * 0.5;
+        spotLight.intensity = pulseIntensity;
     }
-}
-
-// Carregar texturas necessárias logo após a inicialização
-function loadTextures() {
-    // Criar carregador de HDR para o skybox
-    const rgbeLoader = new RGBELoader();
-    let envMap = null;
-    
-    // Carregar o HDR de forma síncrona (para manter a API consistente)
-    rgbeLoader.load('textures/skybox/kloofendal_48d_partly_cloudy_puresky_2k.hdr', function(texture) {
-        // Criar ambiente PMREM para iluminação baseada em imagem
-        const pmremGenerator = new PMREMGenerator(renderer);
-        pmremGenerator.compileEquirectangularShader();
-        
-        envMap = pmremGenerator.fromEquirectangular(texture).texture;
-        
-        // Aplicar ao background da cena
-        scene.background = envMap;
-        
-        // Aplicar ao skybox se já criado
-        if (skybox && skybox.material) {
-            skybox.material.envMap = envMap;
-            skybox.material.needsUpdate = true;
-        }
-        
-        // Aplicar ao oceano para reflexos
-        if (ocean && ocean.material && ocean.material.uniforms && ocean.material.uniforms.envMap) {
-            ocean.material.uniforms.envMap.value = envMap;
-        }
-        
-        console.log("HDR Skybox carregado com sucesso");
-        
-        // Liberar recursos
-        texture.dispose();
-        pmremGenerator.dispose();
-    });
-    
-    // Criar carregador de cubemap como fallback
-    const cubeTextureLoader = new THREE.CubeTextureLoader();
-    const environmentMap = cubeTextureLoader.load(cubeMapUrls);
-    environmentMap.encoding = THREE.sRGBEncoding;
-    
-    return {
-        hdrPath: 'textures/skybox/kloofendal_48d_partly_cloudy_puresky_2k.hdr',
-        waterNormal: textureLoader.load('https://threejs.org/examples/textures/waternormals.jpg', texture => {
-            texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-            texture.repeat.set(8, 8);
-        }),
-        waterDetail: textureLoader.load('https://threejs.org/examples/textures/Water_1_M_Normal.jpg', texture => {
-            texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-            texture.repeat.set(16, 16);
-        }),
-        caustics: textureLoader.load('https://threejs.org/examples/textures/caustics.jpg', texture => {
-            texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-            texture.repeat.set(8, 8);
-        }),
-        envMap: environmentMap, // Manter como fallback
-        sand: textureLoader.load('https://threejs.org/examples/textures/terrain/grasslight-big.jpg', texture => {
-            texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-            texture.repeat.set(5, 5);
-        }),
-        rock: textureLoader.load('https://threejs.org/examples/textures/terrain/backgrounddetailed6.jpg', texture => {
-            texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-            texture.repeat.set(10, 10);
-        }),
-        coral: textureLoader.load('https://threejs.org/examples/textures/Water_1_M_Normal.jpg', texture => {
-            texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-        })
-    };
-}
-
-// Adicionar função para gerar mundo procedural
-function generateProceduralWorld(textures) {
-    // Limpar mundo existente
-    for (let i = 0; i < terrain.length; i++) {
-        scene.remove(terrain[i]);
-    }
-    terrain = [];
-    
-    // Determinar quais chunks devem ser criados baseado na posição do jogador
-    updateVisibleChunks(textures);
-}
-
-// Função para gerenciar chunks visíveis baseado na posição do jogador
-function updateVisibleChunks(textures) {
-    if (!kayak) return;
-    
-    // Calcular posição do chunk atual do jogador
-    const chunkX = Math.floor(kayak.position.x / chunkSize);
-    const chunkZ = Math.floor(kayak.position.z / chunkSize);
-    
-    // Gerar chunks em um raio ao redor do jogador
-    const radius = Math.floor(chunksVisible / 2);
-    
-    for (let x = chunkX - radius; x <= chunkX + radius; x++) {
-        for (let z = chunkZ - radius; z <= chunkZ + radius; z++) {
-            const chunkKey = `${x},${z}`;
-            
-            // Verificar se o chunk já existe
-            const exists = terrain.some(obj => obj.userData.chunkKey === chunkKey);
-            
-            if (!exists) {
-                // Criar novo chunk
-                createTerrainChunk(x, z, textures);
-            }
-        }
-    }
-    
-    // Remover chunks fora de alcance
-    for (let i = terrain.length - 1; i >= 0; i--) {
-        const chunk = terrain[i];
-        const [chunkObjX, chunkObjZ] = chunk.userData.chunkKey.split(',').map(Number);
-        
-        if (Math.abs(chunkObjX - chunkX) > radius + 1 || 
-            Math.abs(chunkObjZ - chunkZ) > radius + 1) {
-            scene.remove(chunk);
-            terrain.splice(i, 1);
-        }
-    }
-}
-
-// Criar um chunk de terreno com elementos procedurais
-function createTerrainChunk(chunkX, chunkZ, textures) {
-    const chunkGroup = new THREE.Group();
-    chunkGroup.userData.chunkKey = `${chunkX},${chunkZ}`;
-    
-    const chunkCenterX = chunkX * chunkSize + chunkSize / 2;
-    const chunkCenterZ = chunkZ * chunkSize + chunkSize / 2;
-    
-    // Usar deterministic noise baseado na posição do chunk e seed
-    const noiseSeed = worldSeed + chunkX * 1000 + chunkZ;
-    const random = seededRandom(noiseSeed);
-    
-    // Decidir se este chunk tem uma ilha
-    if (random() < 0.2) { // 20% de chance de ter uma ilha
-        createIsland(chunkGroup, chunkCenterX, chunkCenterZ, random, textures);
-    }
-    
-    // Adicionar algumas plantas/corais subaquáticos
-    const plantCount = Math.floor(random() * 10);
-    for (let i = 0; i < plantCount; i++) {
-        const plantX = chunkCenterX + (random() - 0.5) * chunkSize * 0.8;
-        const plantZ = chunkCenterZ + (random() - 0.5) * chunkSize * 0.8;
-        createSeaPlant(chunkGroup, plantX, plantZ, textures, random);
-    }
-    
-    scene.add(chunkGroup);
-    terrain.push(chunkGroup);
-}
-
-// Criar uma ilha em um chunk
-function createIsland(parent, x, z, random, textures) {
-    // Tamanho da ilha
-    const islandSize = 3 + random() * 8;
-    const islandHeight = 1 + random() * 3;
-    
-    // Criar geometria da ilha
-    const islandGeometry = new THREE.CylinderGeometry(islandSize, islandSize * 1.2, islandHeight, 16, 3);
-    
-    // Deformar a geometria para parecer mais natural
-    const vertices = islandGeometry.attributes.position;
-    for (let i = 0; i < vertices.count; i++) {
-        const x = vertices.getX(i);
-        const y = vertices.getY(i);
-        const z = vertices.getZ(i);
-        
-        // Aplicar ruído para criar terreno irregular
-        const distFromCenter = Math.sqrt(x * x + z * z);
-        const noise = simplex(x * 0.2, z * 0.2) * 0.5;
-        
-        // Deformar mais nas bordas
-        const deform = noise * (distFromCenter / islandSize);
-        
-        vertices.setX(i, x + x * deform * 0.3);
-        vertices.setZ(i, z + z * deform * 0.3);
-        
-        // Adicionar mais altura nas partes centrais
-        if (y > 0 && distFromCenter < islandSize * 0.7) {
-            vertices.setY(i, y + noise * 0.5);
-        }
-    }
-    
-    // Recalcular normais após deformação
-    islandGeometry.computeVertexNormals();
-    
-    // Material para a ilha
-    const islandMaterial = new THREE.MeshStandardMaterial({
-        map: textures.sand,
-        roughness: 0.8,
-        metalness: 0.1,
-        flatShading: true
-    });
-    
-    const island = new THREE.Mesh(islandGeometry, islandMaterial);
-    island.position.set(x, 0, z);
-    island.rotation.y = random() * Math.PI * 2;
-    
-    // Adicionar algumas rochas na ilha
-    const rockCount = Math.floor(random() * 5) + 1;
-    for (let i = 0; i < rockCount; i++) {
-        createRock(island, random() * islandSize * 0.7, islandHeight / 2, random() * islandSize * 0.7, textures, random);
-    }
-    
-    // Adicionar algumas palmeiras
-    const palmCount = Math.floor(random() * 3) + 1;
-    for (let i = 0; i < palmCount; i++) {
-        const palmX = (random() - 0.5) * islandSize * 0.8;
-        const palmZ = (random() - 0.5) * islandSize * 0.8;
-        const distFromCenter = Math.sqrt(palmX * palmX + palmZ * palmZ);
-        
-        // Colocar palmeiras mais próximas das bordas
-        if (distFromCenter > islandSize * 0.3) {
-            createPalmTree(island, palmX, islandHeight / 2, palmZ, textures, random);
-        }
-    }
-    
-    parent.add(island);
-}
-
-// Criar rocha
-function createRock(parent, x, y, z, textures, random) {
-    const rockGeometry = new THREE.DodecahedronGeometry(0.5 + random() * 0.5, 1);
-    
-    // Deformar a geometria para parecer mais natural
-    const vertices = rockGeometry.attributes.position;
-    for (let i = 0; i < vertices.count; i++) {
-        const vx = vertices.getX(i);
-        const vy = vertices.getY(i);
-        const vz = vertices.getZ(i);
-        
-        const noise = random() * 0.2;
-        vertices.setX(i, vx * (1 + noise));
-        vertices.setY(i, vy * (1 + noise));
-        vertices.setZ(i, vz * (1 + noise));
-    }
-    
-    rockGeometry.computeVertexNormals();
-    
-    const rockMaterial = new THREE.MeshStandardMaterial({
-        map: textures.rock,
-        roughness: 0.9,
-        metalness: 0.1,
-        flatShading: true
-    });
-    
-    const rock = new THREE.Mesh(rockGeometry, rockMaterial);
-    rock.position.set(x, y, z);
-    rock.rotation.set(random() * Math.PI, random() * Math.PI, random() * Math.PI);
-    rock.scale.set(
-        0.7 + random() * 0.6,
-        0.7 + random() * 0.6,
-        0.7 + random() * 0.6
-    );
-    
-    parent.add(rock);
-    return rock;
-}
-
-// Criar palmeira
-function createPalmTree(parent, x, y, z, textures, random) {
-    const palmGroup = new THREE.Group();
-    
-    // Tronco da palmeira
-    const trunkGeometry = new THREE.CylinderGeometry(0.1, 0.15, 2 + random() * 1.5, 8, 4);
-    const trunkMaterial = new THREE.MeshStandardMaterial({
-        color: 0x8B4513,
-        roughness: 0.9,
-        metalness: 0.1
-    });
-    
-    // Curvar o tronco
-    const vertices = trunkGeometry.attributes.position;
-    const bend = (random() * 0.2) + 0.1;
-    const bendDir = random() * Math.PI * 2;
-    
-    for (let i = 0; i < vertices.count; i++) {
-        const vy = vertices.getY(i);
-        const t = (vy + trunkGeometry.parameters.height * 0.5) / trunkGeometry.parameters.height;
-        
-        if (t > 0.5) {
-            const bendAmount = (t - 0.5) * 2 * bend;
-            vertices.setX(i, vertices.getX(i) + Math.cos(bendDir) * bendAmount);
-            vertices.setZ(i, vertices.getZ(i) + Math.sin(bendDir) * bendAmount);
-        }
-    }
-    
-    trunkGeometry.computeVertexNormals();
-    
-    const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
-    trunk.position.y = trunkGeometry.parameters.height * 0.5;
-    palmGroup.add(trunk);
-    
-    // Folhas da palmeira
-    const leafCount = 5 + Math.floor(random() * 3);
-    const leafMaterial = new THREE.MeshStandardMaterial({
-        color: 0x2E8B57,
-        roughness: 0.8,
-        metalness: 0.1,
-        side: THREE.DoubleSide
-    });
-    
-    for (let i = 0; i < leafCount; i++) {
-        const leafLength = 1 + random() * 0.5;
-        const leafWidth = 0.2 + random() * 0.2;
-        
-        // Criar forma da folha
-        const leafShape = new THREE.Shape();
-        leafShape.moveTo(0, 0);
-        leafShape.lineTo(leafLength * 0.2, leafWidth * 0.5);
-        leafShape.lineTo(leafLength, 0);
-        leafShape.lineTo(leafLength * 0.2, -leafWidth * 0.5);
-        leafShape.lineTo(0, 0);
-        
-        const leafGeometry = new THREE.ShapeGeometry(leafShape, 6);
-        const leaf = new THREE.Mesh(leafGeometry, leafMaterial);
-        
-        // Posicionar no topo do tronco
-        leaf.position.y = trunkGeometry.parameters.height;
-        
-        // Rotacionar aleatoriamente
-        const angle = (i / leafCount) * Math.PI * 2;
-        leaf.rotation.z = -Math.PI / 4 - random() * Math.PI / 4;
-        leaf.rotation.y = angle;
-        
-        palmGroup.add(leaf);
-    }
-    
-    palmGroup.position.set(x, y, z);
-    parent.add(palmGroup);
-    return palmGroup;
-}
-
-// Criar planta subaquática
-function createSeaPlant(parent, x, z, textures, random) {
-    const plantHeight = 0.5 + random() * 1;
-    const plantWidth = 0.3 + random() * 0.3;
-    
-    const plantGeometry = new THREE.CylinderGeometry(0, plantWidth, plantHeight, 8, 4, true);
-    
-    // Deformar para parecer mais orgânico
-    const vertices = plantGeometry.attributes.position;
-    for (let i = 0; i < vertices.count; i++) {
-        const vx = vertices.getX(i);
-        const vy = vertices.getY(i);
-        const vz = vertices.getZ(i);
-        
-        const waveFactor = 0.2 * Math.sin(vy * 10);
-        vertices.setX(i, vx + waveFactor);
-        vertices.setZ(i, vz + waveFactor);
-    }
-    
-    plantGeometry.computeVertexNormals();
-    
-    const plantMaterial = new THREE.MeshStandardMaterial({
-        color: new THREE.Color(
-            0.1 + random() * 0.1,
-            0.5 + random() * 0.3,
-            0.3 + random() * 0.2
-        ),
-        roughness: 0.8,
-        metalness: 0.1,
-        transparent: true,
-        opacity: 0.9,
-        side: THREE.DoubleSide
-    });
-    
-    const plant = new THREE.Mesh(plantGeometry, plantMaterial);
-    
-    // Posicionar a planta no fundo do oceano
-    const time = clock.getElapsedTime();
-    const waveHeight = getWaveHeight(x, z, time);
-    plant.position.set(x, -1 + waveHeight, z);
-    plant.rotation.y = random() * Math.PI * 2;
-    
-    parent.add(plant);
-    return plant;
-}
-
-// Funções auxiliares para geração procedural
-
-// Função de ruído para terreno
-function simplex(x, z) {
-    // Implementação simples de ruído pseudo-aleatório
-    return Math.sin(x * 0.1) * Math.cos(z * 0.1) * 2.0;
-}
-
-// Função de aleatoriedade com seed para determinismo
-function seededRandom(seed) {
-    let value = seed;
-    return function() {
-        value = (value * 9301 + 49297) % 233280;
-        return value / 233280;
-    };
 } 
